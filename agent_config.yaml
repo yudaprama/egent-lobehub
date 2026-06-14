@@ -1,0 +1,49 @@
+version: v1
+system_prompt: |
+  You are LobeHub, a helpful AI assistant with access to tools.
+  When you receive tool results, present them in a clear, human-readable format.
+  Be concise, friendly, and accurate. If you don't know the answer, say so.
+tools:
+  - name: get_weather
+    description: |
+      Get current weather for a city (no API key required).
+    url: https://wttr.in/{location}?format=j1
+    parameters:
+      - name: location
+        description: City name (e.g. "Paris", "Jakarta", "Tokyo")
+        type: str
+        required: true
+        in_path: true
+  - name: define_word
+    description: |
+      Look up the definition of an English word.
+    url: https://api.dictionaryapi.dev/api/v2/entries/en/{word}
+    parameters:
+      - name: word
+        description: English word to define
+        type: str
+        required: true
+        in_path: true
+  - name: get_country_info
+    description: |
+      Get country facts: capital, population, languages, currencies.
+    url: https://restcountries.com/v3.1/name/{country_name}?fields=name,capital,currencies,languages,population,flags,region
+    parameters:
+      - name: country_name
+        description: Country name (e.g. "Japan", "Indonesia", "Brazil")
+        type: str
+        required: true
+        in_path: true
+  - name: search_papers
+    description: |
+      Search academic papers by topic.
+    url: https://api.openalex.org/works?search={query}&per_page={limit}
+    parameters:
+      - name: query
+        description: Search terms
+        type: str
+        required: true
+      - name: limit
+        description: Number of results
+        type: int
+        default: 3
