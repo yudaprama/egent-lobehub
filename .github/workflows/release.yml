@@ -57,13 +57,23 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/}"
-            IS_TAG=true
+            # SemVer pre-release detection: any dash after vX.Y.Z (e.g. v0.0.3-rc1, v0.0.3-pre.1)
+            if [[ "$VERSION" == *-* ]]; then
+              IS_TAG=true
+              IS_PRERELEASE=true
+            else
+              IS_TAG=true
+              IS_PRERELEASE=false
+            fi
           else
             VERSION="v0.0.${GITHUB_RUN_NUMBER}"
             IS_TAG=false
+            IS_PRERELEASE=true
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "is_tag=$IS_TAG" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION (prerelease=$IS_PRERELEASE)"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -80,7 +90,7 @@ jobs:
           tag_name: ${{ steps.ver.outputs.version }}
           name: Release ${{ steps.ver.outputs.version }}
           generate_release_notes: true
-          prerelease: ${{ steps.ver.outputs.is_tag != 'true' }}
+          prerelease: ${{ steps.ver.outputs.is_prerelease == 'true' }}
           files: |
             dist/*.tar.gz
             dist/*.sha256
