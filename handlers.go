@@ -9,9 +9,38 @@ import (
 	"strings"
 	"time"
 
+	"egent-lobehub/memory"
+
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
+
+// extractUserID reads the user identity from the HTTP request.
+// Priority order:
+//  1. x-arch-actor-id header (set by Plano brightstaff after Talos verify)
+//  2. X-User-ID header (dev/auth-proxied)
+//  3. Authorization: kratos:<session_token> (prod)
+//  4. Defaults to "anonymous"
+func extractUserID(r *http.Request) string {
+	if uid := r.Header.Get("x-arch-actor-id"); uid != "" {
+		return uid
+	}
+	if uid := r.Header.Get("X-User-ID"); uid != "" {
+		return uid
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "kratos:") {
+		// TODO: validate token via Kratos admin API
+		return strings.TrimPrefix(auth, "kratos:")
+	}
+	return "anonymous"
+}
+
+// extractArchAgentID reads Plano's routing header for logging/audit.
+// This is NOT a user identifier — it's the agent_id that Plano
+// resolved the request to. See brightstaff::handlers::agents::pipeline::build_agent_headers.
+func extractArchAgentID(r *http.Request) string {
+	return r.Header.Get("x-arch-upstream")
+}
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -58,8 +87,8 @@ func chatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := buildConversationQuery(req.Messages)
-
-	ctx := r.Context()
+	userID := extractUserID(r)
+	ctx := memory.WithUserID(r.Context(), userID)
 	iter, err := rt.Query(ctx, query)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("runtime error: %v", err), http.StatusInternalServerError)

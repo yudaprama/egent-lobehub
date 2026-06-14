@@ -5,6 +5,8 @@ go 1.26.1
 require (
 	github.com/cloudwego/eino v0.9.4
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
+	github.com/joho/godotenv v1.5.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -37,5 +39,4 @@ require (
 	golang.org/x/arch v0.11.0 // indirect
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect
 	golang.org/x/sys v0.29.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

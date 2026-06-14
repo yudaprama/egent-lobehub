@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"egent-lobehub/agent"
+	"egent-lobehub/middleware"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -19,6 +20,16 @@ type Config struct {
 	ToolResultMaxLength int
 	BaseURL             string
 	ModelName           string
+
+	// MergedConfig holds the layered agent config map (if available).
+	// When set, it overrides SystemPrompt, ModelName, etc. from the merge.
+	MergedConfig map[string]any
+
+	// WorkspaceID scopes agent config (skip user layer when set).
+	WorkspaceID string
+
+	// PermissionConfig gates tools by user permission (optional).
+	PermissionConfig *middleware.PermissionConfig
 }
 
 // Runtime coordinates the LobeHub Eino agent:
@@ -73,22 +84,37 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return nil
 	}
 
-	ag, err := agent.NewAgent(ctx, &agent.AgentConfig{
-		SystemPrompt: r.cfg.SystemPrompt,
-		Tools:        r.tools,
-	}, &agent.AgentOptions{
-		Name:               r.cfg.AgentName,
-		BaseURL:            r.cfg.BaseURL,
-		ModelName:          r.cfg.ModelName,
+	// Resolve merged config if available, falling back to explicit fields.
+	systemPrompt := r.cfg.SystemPrompt
+	modelName := r.cfg.ModelName
+	if r.cfg.MergedConfig != nil {
+		if sp, ok := r.cfg.MergedConfig["systemPrompt"].(string); ok && sp != "" {
+			systemPrompt = sp
+		}
+		if m, ok := r.cfg.MergedConfig["model"].(string); ok && m != "" {
+			modelName = m
+		}
+	}
+
+	agentOpts := &agent.AgentOptions{
+		Name:                r.cfg.AgentName,
+		BaseURL:             r.cfg.BaseURL,
+		ModelName:           modelName,
 		ToolResultMaxLength: r.cfg.ToolResultMaxLength,
-	})
+		PermissionConfig:    r.cfg.PermissionConfig,
+	}
+
+	ag, err := agent.NewAgent(ctx, &agent.AgentConfig{
+		SystemPrompt: systemPrompt,
+		Tools:        r.tools,
+	}, agentOpts)
 	if err != nil {
 		return fmt.Errorf("build agent: %w", err)
 	}
 	r.agent = ag
 	r.runner = agent.NewRunner(ctx, ag)
 	r.started = true
-	log.Printf("runtime started: %d tools registered, max_len=%d", len(r.tools), r.cfg.ToolResultMaxLength)
+	log.Printf("runtime started: %d tools, max_len=%d, model=%s", len(r.tools), r.cfg.ToolResultMaxLength, modelName)
 	return nil
 }
 

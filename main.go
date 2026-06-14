@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -25,16 +26,22 @@ var (
 )
 
 func main() {
+	versionFlag := flag.Bool("version", false, "print version and exit")
+	configPath := flag.String("config", "", "path to agent config file (uses embedded config if empty)")
+	port := flag.String("port", "10531", "HTTP server port")
+	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("egent-lobehub %s\n", version)
+		os.Exit(0)
+	}
+
 	// Load .env
 	if exe, err := os.Executable(); err == nil {
 		envPath := filepath.Join(filepath.Dir(exe), "..", ".env")
 		godotenv.Load(envPath)
 	}
 	godotenv.Load()
-
-	configPath := flag.String("config", "", "path to agent config file (uses embedded config if empty)")
-	port := flag.String("port", "10531", "HTTP server port")
-	flag.Parse()
 
 	if *configPath != "" {
 		configDir := filepath.Dir(*configPath)
@@ -86,7 +93,7 @@ func main() {
 	http.HandleFunc("/v1/tools", toolsHandler)
 
 	addr := "0.0.0.0:" + *port
-	log.Printf("LobeHub Eino Agent server starting on %s", addr)
+	log.Printf("egent-lobehub %s starting on %s", version, addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
