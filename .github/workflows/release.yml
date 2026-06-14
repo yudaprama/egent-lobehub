@@ -11,19 +11,8 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    name: Build all targets
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -43,24 +32,14 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
-      - name: Build binary
+      - name: Build all targets
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: |
-          mkdir -p dist
-          BINARY="egent-lobehub-${{ matrix.goos }}-${{ matrix.goarch }}"
-          LDFLAGS="-s -w -X main.version=${{ steps.ver.outputs.version }}"
-          go build -trimpath -ldflags "$LDFLAGS" -o "dist/$BINARY" .
-
-          # Package as tarball (preserve exec bit + portability)
-          tar -czf "dist/$BINARY.tar.gz" -C dist "$BINARY"
-          sha256sum "dist/$BINARY.tar.gz" > "dist/$BINARY.tar.gz.sha256"
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: make build-all VERSION="$VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: egent-lobehub-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: egent-lobehub-binaries
           path: |
             dist/*.tar.gz
             dist/*.sha256
