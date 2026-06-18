@@ -14,11 +14,14 @@ import (
 	"syscall"
 	"time"
 
+	"egent-lobehub/connectors/composio"
+	composioeino "egent-lobehub/connectors/composio/eino"
 	"egent-lobehub/middleware"
 	"egent-lobehub/runtime"
 	"egent-lobehub/tool"
 	"egent-lobehub/yamlconfig"
 
+	einoTool "github.com/cloudwego/eino/components/tool"
 	"github.com/joho/godotenv"
 )
 
@@ -118,6 +121,49 @@ func main() {
 	if err := rt.RegisterTools(tools); err != nil {
 		slog.Error("register tools failed", "error", err)
 		os.Exit(1)
+	}
+
+	// Optional: Composio 3rd-party SaaS tools (Slack/Gmail/GitHub/etc.).
+	// Wired when COMPOSIO_API_KEY is set. The agent gets one tool per
+	// action per connected app for every user who has an ACTIVE
+	// Composio connection; the adapter returns NotConnectedError for
+	// users without one, which the runtime maps to ErrorKindStop.
+	//
+	// The per-user connection lookup happens at InvokableRun time via
+	// RESTAccountStore (pREST-backed) — tools are registered at
+	// startup because their slugs are stable across requests.
+	if composioKey := os.Getenv("COMPOSIO_API_KEY"); composioKey != "" {
+		prestURL := os.Getenv("PREST_URL")
+		if prestURL == "" {
+			prestURL = "http://localhost:3000"
+		}
+		store := composioeino.NewRESTAccountStore(prestURL)
+		client, err := composio.NewComposer(composioKey)
+		if err != nil {
+			slog.Error("composio: create client failed", "error", err)
+			os.Exit(1)
+		}
+		if client != nil && store != nil {
+			builder := composioeino.NewBuilder(client, store, slog.Default())
+			composioTools, err := builder.Build(ctx)
+			if err != nil {
+				slog.Error("composio: build tools failed", "error", err)
+				os.Exit(1)
+			}
+			bases := make([]einoTool.BaseTool, 0, len(composioTools))
+			for _, ct := range composioTools {
+				bases = append(bases, ct)
+			}
+			if err := rt.RegisterTools(bases); err != nil {
+				slog.Error("composio: register tools failed", "error", err)
+				os.Exit(1)
+			}
+			slog.Info("composio: tools registered", "summary", composioeino.FormatToolsForLog(composioTools))
+		} else {
+			slog.Info("composio: client or store not configured; Composio tools disabled")
+		}
+	} else {
+		slog.Info("composio: COMPOSIO_API_KEY not set; Composio tools disabled")
 	}
 
 	if err := rt.Start(ctx); err != nil {
