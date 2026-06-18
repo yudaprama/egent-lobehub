@@ -59,7 +59,7 @@ func (t *APITool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	return t.info, nil
 }
 
-func (t *APITool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+func (t *APITool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	args := map[string]any{}
 	if argumentsInJSON != "" && argumentsInJSON != "{}" {
 		if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
@@ -114,7 +114,7 @@ func (t *APITool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...t
 		bodyReader = bytes.NewReader(payload)
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), t.method, path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, t.method, path, bodyReader)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}

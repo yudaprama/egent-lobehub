@@ -2,7 +2,7 @@ package tool
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -88,7 +88,7 @@ func resolveEnvVars(s string) string {
 		varName := match[1:]
 		val := os.Getenv(varName)
 		if val == "" {
-			log.Printf("warning: env var %s not set", varName)
+			slog.Warn("env var not set", "var", varName)
 			return match
 		}
 		return val

@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -61,7 +61,11 @@ func (t *TruncationMiddleware) InvokableRun(ctx context.Context, argumentsJSON s
 	original := result
 	truncated := TruncateToolResult(result, t.maxLength)
 	if truncated != original {
-		log.Printf("tool result truncated: %d -> %d chars (limit: %d)", len(original), len(truncated), t.maxLength)
+		slog.Debug("tool result truncated",
+			"from", len(original),
+			"to", len(truncated),
+			"limit", t.maxLength,
+		)
 	}
 
 	return truncated, nil
@@ -153,7 +157,13 @@ func (c *ClassifiedToolMiddleware) InvokableRun(ctx context.Context, argumentsJS
 
 	if err != nil {
 		classified := ClassifyToolError(err)
-		log.Printf("tool %s error [%s/%s] after %v: %s", c.identifier, classified.Kind, classified.Code, elapsed, classified.Message)
+		slog.Warn("tool error classified",
+			"tool", c.identifier,
+			"kind", classified.Kind,
+			"code", classified.Code,
+			"elapsed", elapsed,
+			"message", classified.Message,
+		)
 		// Return a formatted error message that the LLM can understand
 		return fmt.Sprintf("Tool execution error (%s): %s", classified.Kind, classified.Message), nil
 	}
@@ -163,7 +173,11 @@ func (c *ClassifiedToolMiddleware) InvokableRun(ctx context.Context, argumentsJS
 		original := result
 		result = TruncateToolResult(result, c.maxLength)
 		if result != original {
-			log.Printf("tool %s result truncated: %d -> %d chars", c.identifier, len(original), len(result))
+			slog.Debug("tool result truncated",
+				"tool", c.identifier,
+				"from", len(original),
+				"to", len(result),
+			)
 		}
 	}
 

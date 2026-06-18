@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"sync"
 
@@ -166,5 +166,8 @@ func (r *ToolResolver) Len() int {
 
 // Log writes a debug summary of registered tools.
 func (r *ToolResolver) Log() {
-	log.Printf("tool resolver: %d tools registered: %v", r.Len(), r.ListIdentifiers())
+	slog.Debug("tool resolver",
+		"count", r.Len(),
+		"identifiers", r.ListIdentifiers(),
+	)
 }

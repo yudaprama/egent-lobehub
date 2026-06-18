@@ -3,10 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
-
-	"egent-lobehub/middleware"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
@@ -20,12 +17,8 @@ type AgentConfig struct {
 	Tools        []tool.BaseTool
 }
 
-// AgentOptions configures the Eino agent with LobeHub middleware.
+// AgentOptions configures the Eino agent.
 type AgentOptions struct {
-	// PermissionConfig gates tools by user permission (optional).
-	PermissionConfig *middleware.PermissionConfig
-	// ToolResultMaxLength caps truncated tool output (0 = default 25k).
-	ToolResultMaxLength int
 	// Name overrides the default agent name.
 	Name string
 	// BaseURL overrides the LLM gateway URL.
@@ -34,14 +27,12 @@ type AgentOptions struct {
 	ModelName string
 }
 
-// NewAgent creates an Eino ChatModelAgent with LobeHub-style middleware.
-// Each tool is wrapped with: permission gate → error classification + truncation.
+// NewAgent creates an Eino ChatModelAgent. Tools should be pre-wrapped
+// with middleware by the caller (Runtime uses ToolResolver for this).
 func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Agent, error) {
 	baseURL := "http://localhost:12000/v1"
 	modelName := "custom/glm-5.1"
 	agentName := "LobeHubAgent"
-	maxLen := middleware.DefaultToolResultMaxLength
-	var permCfg *middleware.PermissionConfig
 
 	if opts != nil {
 		if opts.BaseURL != "" {
@@ -53,10 +44,6 @@ func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Ag
 		if opts.Name != "" {
 			agentName = opts.Name
 		}
-		if opts.ToolResultMaxLength > 0 {
-			maxLen = opts.ToolResultMaxLength
-		}
-		permCfg = opts.PermissionConfig
 	}
 
 	// Allow env var override
@@ -76,18 +63,6 @@ func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Ag
 		return nil, fmt.Errorf("create chat model: %w", err)
 	}
 
-	// Wrap each tool with LobeHub middleware layers
-	wrappedTools := make([]tool.BaseTool, len(cfg.Tools))
-	for i, t := range cfg.Tools {
-		info, _ := t.Info(ctx)
-		name := fmt.Sprintf("tool_%d", i)
-		if info != nil {
-			name = info.Name
-		}
-		wrappedTools[i] = middleware.WrapWithMiddleware(t, name, permCfg, maxLen)
-		log.Printf("wrapped tool %s with middleware", name)
-	}
-
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        agentName,
 		Description: "LobeHub agent with tool execution middleware",
@@ -95,7 +70,7 @@ func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Ag
 		Model:       chatModel,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools: wrappedTools,
+				Tools: cfg.Tools,
 			},
 		},
 	})

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -44,7 +44,29 @@ func extractArchAgentID(r *http.Request) string {
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":  "ok",
+		"started": rt.Started(),
+		"tools":   len(rt.Tools()),
+		"version": version,
+	})
+}
+
+// readyHandler returns 200 when the runtime is ready to accept queries,
+// 503 otherwise. Suitable for Kubernetes readiness probes.
+func readyHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if !rt.Started() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "not_ready",
+			"reason": "runtime not started",
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ready",
+	})
 }
 
 // toolsHandler returns the list of registered tools.
@@ -102,24 +124,61 @@ func chatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// buildConversationQuery formats the full conversation history so the agent
-// has multi-turn context. Single messages pass through as-is.
+// buildConversationQuery formats the conversation history for the agent.
+// System messages from the request are preserved as context (the agent's
+// instruction already has the base system prompt; request-level system
+// messages augment it). Single user messages pass through as-is.
 func buildConversationQuery(messages []ChatCompletionMessage) string {
-	if len(messages) == 1 {
+	if len(messages) == 1 && messages[0].Role == "user" {
 		return messages[0].Content
 	}
 
-	var b strings.Builder
-	for _, m := range messages {
+	var systemParts []string
+	var historyParts []string
+	var lastUserMsg string
+
+	for i, m := range messages {
 		switch m.Role {
 		case "system":
-			// system prompt is in the agent instruction
+			systemParts = append(systemParts, m.Content)
 		case "user":
-			fmt.Fprintf(&b, "User: %s\n", m.Content)
+			if i == len(messages)-1 {
+				lastUserMsg = m.Content
+			} else {
+				historyParts = append(historyParts, "User: "+m.Content)
+			}
 		case "assistant":
-			fmt.Fprintf(&b, "Assistant: %s\n", m.Content)
+			historyParts = append(historyParts, "Assistant: "+m.Content)
 		}
 	}
+
+	var b strings.Builder
+
+	if len(systemParts) > 0 {
+		b.WriteString("System instructions:\n")
+		for _, s := range systemParts {
+			b.WriteString(s)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(historyParts) > 0 {
+		b.WriteString("Conversation history:\n")
+		for _, h := range historyParts {
+			b.WriteString(h)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if lastUserMsg != "" {
+		b.WriteString(lastUserMsg)
+	} else if len(historyParts) > 0 {
+		// Last message was assistant — prompt for continuation
+		b.WriteString("Continue the conversation.")
+	}
+
 	return b.String()
 }
 
@@ -138,7 +197,7 @@ func handleNonStreamingResponse(w http.ResponseWriter, req ChatCompletionRequest
 		if event.Output != nil && event.Output.MessageOutput != nil {
 			msg, err := event.Output.MessageOutput.GetMessage()
 			if err != nil {
-				log.Printf("get message error: %v", err)
+				slog.Warn("get message error", "error", err)
 				continue
 			}
 			if msg.Role == schema.Assistant && msg.Content != "" {
@@ -204,7 +263,7 @@ func handleStreamingResponse(w http.ResponseWriter, req ChatCompletionRequest, i
 		}
 
 		if event.Err != nil {
-			log.Printf("agent error: %v", event.Err)
+			slog.Warn("agent error", "error", event.Err)
 			errChunk := ChatCompletionChunk{
 				ID:      requestID,
 				Object:  "chat.completion.chunk",
@@ -230,7 +289,7 @@ func handleStreamingResponse(w http.ResponseWriter, req ChatCompletionRequest, i
 		if event.Output != nil && event.Output.MessageOutput != nil {
 			msg, err := event.Output.MessageOutput.GetMessage()
 			if err != nil {
-				log.Printf("get message error: %v", err)
+				slog.Warn("get message error", "error", err)
 				continue
 			}
 			if msg.Role == schema.Assistant && msg.Content != "" {

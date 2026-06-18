@@ -7,9 +7,10 @@ import (
 )
 
 type AgentConfig struct {
-	Version      string    `yaml:"version"`
-	SystemPrompt string    `yaml:"system_prompt"`
-	Tools        []ToolDef `yaml:"tools"`
+	Version       string    `yaml:"version"`
+	SystemPrompt  string    `yaml:"system_prompt"`
+	Tools         []ToolDef `yaml:"tools"`
+	DisabledTools []string  `yaml:"disabled_tools,omitempty"`
 }
 
 type ToolDef struct {

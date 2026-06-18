@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -25,7 +25,6 @@ type ExecAgentParams struct {
 	UserID   string
 	Model    string
 	Provider string
-	Stream   bool
 
 	// Layered config sources (DEFAULT → server → user → agent).
 	DefaultsConfig map[string]any
@@ -46,13 +45,39 @@ type ExecAgentParams struct {
 }
 
 // ExecAgentResult maps to LobeHub ExecAgentResult.
+// Events is the raw event iterator — callers consume it for streaming
+// or use CollectResult() for buffered output.
 type ExecAgentResult struct {
-	Content   string
+	Events    *adk.AsyncIterator[*adk.AgentEvent]
 	AgentID   string
 	MessageID string
-	Latency   time.Duration
-	ToolCalls int
 	ModelUsed string
+}
+
+// CollectResult reads all events from an iterator and joins assistant text.
+// Use this for non-streaming consumption of ExecAgentResult.Events.
+func CollectResult(iter *adk.AsyncIterator[*adk.AgentEvent]) string {
+	var parts []string
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			slog.Warn("agent event error", "error", event.Err)
+			continue
+		}
+		if event.Output != nil && event.Output.MessageOutput != nil {
+			msg, err := event.Output.MessageOutput.GetMessage()
+			if err != nil {
+				continue
+			}
+			if msg.Role == schema.Assistant && msg.Content != "" {
+				parts = append(parts, msg.Content)
+			}
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // AiAgentService is the Go equivalent of LobeHub's AiAgentService.
@@ -77,18 +102,13 @@ func NewAiAgentService(rt *Runtime, tr ToolRegistrar, mm *memory.Manager) *AiAge
 	}
 }
 
-// ExecAgent runs the full agent pipeline:
+// ExecAgent runs the full agent pipeline and returns the event iterator:
 //   1. Merge layered agent config
 //   2. Build context with memory injection
 //   3. Resolve tools
 //   4. Create agent and run query
-//   5. Return formatted result
+//   5. Return iterator — caller decides streaming vs buffered consumption
 func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) (*ExecAgentResult, error) {
-	start := time.Now()
-	if params.TimeNow != nil {
-		start = params.TimeNow()
-	}
-
 	// 1. Merge layered agent config
 	merged := config.MergeAgentConfig(
 		params.DefaultsConfig,
@@ -109,7 +129,11 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	if resolvedID == "" {
 		resolvedID = params.AgentID
 	}
-	log.Printf("execAgent: id=%s model=%s prompt=%.50s", resolvedID, agentCfg.Model, params.Prompt)
+	slog.Info("execAgent: starting",
+		"id", resolvedID,
+		"model", agentCfg.Model,
+		"prompt", params.Prompt[:min(50, len(params.Prompt))],
+	)
 
 	// 2. Build system prompt with context injection
 	systemPrompt := agentCfg.SystemPrompt
@@ -124,7 +148,7 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	}
 	if memoryBlock != "" {
 		systemPrompt = fmt.Sprintf("%s\n\n%s", systemPrompt, memoryBlock)
-		log.Printf("injected %d bytes of memory context", len(memoryBlock))
+		slog.Debug("injected memory context", "bytes", len(memoryBlock))
 	}
 
 	// 3. Resolve context from prompt attachments
@@ -149,10 +173,9 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	}
 
 	opts := &agent.AgentOptions{
-		Name:       fmt.Sprintf("agent-%s", resolvedID),
-		ModelName:  modelName,
-		BaseURL:    os.Getenv("PLANO_LLM_GATEWAY"),
-		PermissionConfig: nil, // TODO: wire permission from runtime config
+		Name:      fmt.Sprintf("agent-%s", resolvedID),
+		ModelName: modelName,
+		BaseURL:   os.Getenv("PLANO_LLM_GATEWAY"),
 	}
 
 	// 6. Create the agent and runner
@@ -165,23 +188,13 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	// 7. Build the query
 	query := buildQuery(systemPrompt, promptContext, params.Prompt)
 
-	// 8. Execute
+	// 8. Execute — return the iterator for caller-driven consumption
 	iter := r.Query(ctx, query)
-	result := &ExecAgentResult{AgentID: resolvedID, ModelUsed: modelName}
-
-	// 9. Collect response
-	if params.Stream {
-		result.Content = collectStreamResult(ctx, iter)
-	} else {
-		result.Content = collectResult(ctx, iter)
-	}
-
-	result.Latency = time.Since(start)
-
-	// Count tool calls (rough approximation from event output)
-	log.Printf("execAgent done: id=%s latency=%v content_len=%d", resolvedID, result.Latency, len(result.Content))
-
-	return result, nil
+	return &ExecAgentResult{
+		Events:    iter,
+		AgentID:   resolvedID,
+		ModelUsed: modelName,
+	}, nil
 }
 
 // resolveTools builds the full tool list for execution.
@@ -226,34 +239,4 @@ func buildQuery(systemPrompt, context, userPrompt string) string {
 	}
 	b.WriteString(userPrompt)
 	return b.String()
-}
-
-// collectResult reads all events from a non-streaming run and joins text output.
-func collectResult(ctx context.Context, iter *adk.AsyncIterator[*adk.AgentEvent]) string {
-	var parts []string
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		if event.Err != nil {
-			log.Printf("agent event error: %v", event.Err)
-			continue
-		}
-		if event.Output != nil && event.Output.MessageOutput != nil {
-			msg, err := event.Output.MessageOutput.GetMessage()
-			if err != nil {
-				continue
-			}
-			if msg.Role == schema.Assistant && msg.Content != "" {
-				parts = append(parts, msg.Content)
-			}
-		}
-	}
-	return strings.Join(parts, "")
-}
-
-// collectStreamResult reads events and maintains streaming semantics.
-func collectStreamResult(ctx context.Context, iter *adk.AsyncIterator[*adk.AgentEvent]) string {
-	return collectResult(ctx, iter)
 }

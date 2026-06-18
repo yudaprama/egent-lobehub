@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +39,7 @@ func NewManager(store Store) *Manager {
 func (m *Manager) Recall(ctx context.Context, userID, query string) string {
 	entries, err := m.store.Search(ctx, userID, query, 10)
 	if err != nil {
-		log.Printf("memory recall failed: %v", err)
+		slog.Warn("memory recall failed", "error", err)
 		return ""
 	}
 	if m.OnRecall != nil {
@@ -77,7 +77,7 @@ func (m *Manager) ExtractAndStore(ctx context.Context, userID, text string) erro
 	}
 	for key, value := range facts {
 		if err := m.store.Set(ctx, userID, key, value); err != nil {
-			log.Printf("memory store failed for key %s: %v", key, err)
+			slog.Warn("memory store failed", "key", key, "error", err)
 			continue
 		}
 	}

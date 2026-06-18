@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"egent-lobehub/agent"
@@ -34,20 +34,19 @@ type Config struct {
 
 // Runtime coordinates the LobeHub Eino agent:
 //   - Holds the agent + runner lifecycle
-//   - Registers and wraps tools with LobeHub middleware
-//   - Provides Query/QueryStream entrypoints (LobeHub AgentRuntimeService equivalent)
+//   - Registers tools via ToolResolver (single resolution path)
+//   - Provides Query entrypoint
 type Runtime struct {
-	cfg     Config
-	mu      sync.Mutex
-	tools   []tool.BaseTool
-	agent   adk.Agent
-	runner  *adk.Runner
-	started bool
+	cfg      Config
+	mu       sync.Mutex
+	resolver *ToolResolver
+	agent    adk.Agent
+	runner   *adk.Runner
+	started  bool
 }
 
 // New creates a runtime with the given config. The agent is not built
-// until RegisterTools + Start are called (LobeHub builds the agent
-// after merging user/agent config and registering plugins).
+// until RegisterTools + Start are called.
 func New(ctx context.Context, cfg *Config) (*Runtime, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("runtime: config is required")
@@ -58,22 +57,40 @@ func New(ctx context.Context, cfg *Config) (*Runtime, error) {
 	if cfg.ToolResultMaxLength <= 0 {
 		cfg.ToolResultMaxLength = 25000
 	}
-	return &Runtime{cfg: *cfg}, nil
+	r := &Runtime{cfg: *cfg}
+	r.resolver = NewToolResolver()
+	if cfg.PermissionConfig != nil {
+		r.resolver.WithPermissionConfig(cfg.PermissionConfig)
+	}
+	return r, nil
 }
 
-// RegisterTools adds tools to the runtime. The agent is (re)built on Start.
+// Resolver returns the underlying ToolResolver for direct registration
+// (e.g. Register(tool, identifier, source)).
+func (r *Runtime) Resolver() *ToolResolver {
+	return r.resolver
+}
+
+// RegisterTools adds tools to the runtime via the ToolResolver.
+// Tools are tagged as ToolSourceBuiltin. The agent is (re)built on Start.
 func (r *Runtime) RegisterTools(tools []tool.BaseTool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools = append(r.tools, tools...)
+	for _, t := range tools {
+		info, err := t.Info(context.Background())
+		if err != nil || info == nil {
+			continue
+		}
+		if err := r.resolver.Register(t, info.Name, ToolSourceBuiltin); err != nil {
+			return fmt.Errorf("register tool %s: %w", info.Name, err)
+		}
+	}
 	return nil
 }
 
-// Tools returns the registered tools.
+// Tools returns the resolved (wrapped) tool list.
 func (r *Runtime) Tools() []tool.BaseTool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.tools
+	return r.resolver.Resolve(context.Background())
 }
 
 // Start builds the Eino ChatModelAgent and Runner. Safe to call once.
@@ -96,17 +113,18 @@ func (r *Runtime) Start(ctx context.Context) error {
 		}
 	}
 
+	// Resolve tools through ToolResolver (wrapping happens here)
+	tools := r.resolver.Resolve(ctx)
+
 	agentOpts := &agent.AgentOptions{
-		Name:                r.cfg.AgentName,
-		BaseURL:             r.cfg.BaseURL,
-		ModelName:           modelName,
-		ToolResultMaxLength: r.cfg.ToolResultMaxLength,
-		PermissionConfig:    r.cfg.PermissionConfig,
+		Name:      r.cfg.AgentName,
+		BaseURL:   r.cfg.BaseURL,
+		ModelName: modelName,
 	}
 
 	ag, err := agent.NewAgent(ctx, &agent.AgentConfig{
 		SystemPrompt: systemPrompt,
-		Tools:        r.tools,
+		Tools:        tools,
 	}, agentOpts)
 	if err != nil {
 		return fmt.Errorf("build agent: %w", err)
@@ -114,7 +132,11 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.agent = ag
 	r.runner = agent.NewRunner(ctx, ag)
 	r.started = true
-	log.Printf("runtime started: %d tools, max_len=%d, model=%s", len(r.tools), r.cfg.ToolResultMaxLength, modelName)
+	slog.Info("runtime started",
+		"tools", len(tools),
+		"max_len", r.cfg.ToolResultMaxLength,
+		"model", modelName,
+	)
 	return nil
 }
 
@@ -126,8 +148,15 @@ func (r *Runtime) Close() error {
 	return nil
 }
 
+// Started reports whether the runtime has been started and is ready
+// to accept queries.
+func (r *Runtime) Started() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.started
+}
+
 // Query runs a single conversation turn and returns the event iterator.
-// Mirrors LobeHub's AgentRuntimeService.executeOperation().
 func (r *Runtime) Query(ctx context.Context, query string) (*adk.AsyncIterator[*adk.AgentEvent], error) {
 	if !r.started {
 		return nil, fmt.Errorf("runtime not started")
