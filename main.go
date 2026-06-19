@@ -144,6 +144,11 @@ func main() {
 			os.Exit(1)
 		}
 		if client != nil && store != nil {
+			// Expose to composio_handlers.go so the UI can drive
+			// connection lifecycle through Go instead of Next.js.
+			composioCli = client
+			composioAccountStore = store
+
 			builder := composioeino.NewBuilder(client, store, slog.Default())
 			composioTools, err := builder.Build(ctx)
 			if err != nil {
@@ -177,6 +182,13 @@ func main() {
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/health/ready", readyHandler)
 	mux.HandleFunc("/v1/tools", toolsHandler)
+	mux.HandleFunc("/v1/composio/connections", composioCreateConnectionHandler)
+	mux.HandleFunc("/v1/composio/connections/poll", composioPollHandler)
+	mux.HandleFunc("/v1/composio/connections/delete", composioDeleteConnectionHandler)
+	mux.HandleFunc("/v1/composio/plugins", composioGetPluginsHandler)
+	mux.HandleFunc("/v1/composio/plugins/update", composioUpdatePluginHandler)
+	mux.HandleFunc("/v1/composio/plugins/remove", composioRemovePluginHandler)
+	mux.HandleFunc("/v1/composio/oauth/callback", composioOAuthCallbackHandler)
 
 	addr := "0.0.0.0:" + *port
 	srv := &http.Server{
