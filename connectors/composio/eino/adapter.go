@@ -78,8 +78,8 @@ type ComposioTool struct {
 	desc    string
 	rawArgs json.RawMessage // input_parameters from Composio, cached at build time
 
-	client  *composio.Composio
-	store   ConnectedAccountStore
+	client *composio.Composio
+	store  ConnectedAccountStore
 	// appIdentifier is the LobeHub-side key (e.g. "gmail") used to look
 	// up the user's connected_account_id. Decoupled from the toolkit
 	// slug so we can rename the wire toolkit without touching user data.
@@ -90,8 +90,8 @@ type ComposioTool struct {
 	// Cached ParamsOneOf built from rawArgs. Composio's JSON Schema is
 	// rich enough that we keep it as-is rather than collapsing to
 	// ParameterInfo; NewParamsOneOfByJSONSchema handles anyOf/oneOf/$defs.
-	once   sync.Once
-	params *schema.ParamsOneOf
+	once      sync.Once
+	params    *schema.ParamsOneOf
 	paramsErr error
 }
 

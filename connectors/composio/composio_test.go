@@ -785,13 +785,13 @@ func TestCatalog(t *testing.T) {
 
 func TestNormaliseSlug(t *testing.T) {
 	cases := map[string]string{
-		"github":         "GITHUB",
-		"GITHUB":         "GITHUB",
+		"github":          "GITHUB",
+		"GITHUB":          "GITHUB",
 		"google-calendar": "GOOGLECALENDAR",
 		"GOOGLECALENDAR":  "GOOGLECALENDAR",
 		"google_calendar": "GOOGLECALENDAR",
-		"slack":          "SLACK",
-		"":               "",
+		"slack":           "SLACK",
+		"":                "",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {

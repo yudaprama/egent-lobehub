@@ -46,7 +46,7 @@ func TestRESTAccountStore_HappyPath(t *testing.T) {
 		row := pluginRow{Identifier: "gmail", UserID: "user-1"}
 		row.CustomParams.Composio = &composioPlugin{
 			ConnectedAccountID: "ca_abc123",
-			Status:            "ACTIVE",
+			Status:             "ACTIVE",
 		}
 		_ = json.NewEncoder(w).Encode([]pluginRow{row})
 	})
@@ -67,7 +67,7 @@ func TestRESTAccountStore_PendingStatusReturnsEmpty(t *testing.T) {
 		row := pluginRow{Identifier: "gmail", UserID: "user-1"}
 		row.CustomParams.Composio = &composioPlugin{
 			ConnectedAccountID: "ca_pending",
-			Status:            "PENDING",
+			Status:             "PENDING",
 		}
 		_ = json.NewEncoder(w).Encode([]pluginRow{row})
 	})
@@ -88,7 +88,7 @@ func TestRESTAccountStore_WrongUserReturnsEmpty(t *testing.T) {
 		row := pluginRow{Identifier: "gmail", UserID: "user-other"}
 		row.CustomParams.Composio = &composioPlugin{
 			ConnectedAccountID: "ca_someone_else",
-			Status:            "ACTIVE",
+			Status:             "ACTIVE",
 		}
 		_ = json.NewEncoder(w).Encode([]pluginRow{row})
 	})

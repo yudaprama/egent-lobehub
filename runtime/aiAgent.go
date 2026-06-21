@@ -11,10 +11,14 @@ import (
 	"egent-lobehub/agent"
 	"egent-lobehub/config"
 	"egent-lobehub/memory"
+	"egent-lobehub/tracing"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ExecAgentParams maps to LobeHub InternalExecAgentParams.
@@ -102,6 +106,9 @@ func NewAiAgentService(rt *Runtime, tr ToolRegistrar, mm *memory.Manager) *AiAge
 	}
 }
 
+// tracer is the package-level tracer for the runtime package.
+var tracer = tracing.Tracer("egent-lobehub/runtime")
+
 // ExecAgent runs the full agent pipeline and returns the event iterator:
 //   1. Merge layered agent config
 //   2. Build context with memory injection
@@ -109,6 +116,17 @@ func NewAiAgentService(rt *Runtime, tr ToolRegistrar, mm *memory.Manager) *AiAge
 //   4. Create agent and run query
 //   5. Return iterator — caller decides streaming vs buffered consumption
 func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) (*ExecAgentResult, error) {
+	ctx, span := tracer.Start(ctx, "AiAgentService.ExecAgent",
+		trace.WithAttributes(
+			attribute.String("agent.id", params.AgentID),
+			attribute.String("agent.slug", params.Slug),
+			attribute.String("agent.model", params.Model),
+			attribute.String("agent.provider", params.Provider),
+			attribute.String("user.id", params.UserID),
+		),
+	)
+	defer span.End()
+
 	// 1. Merge layered agent config
 	merged := config.MergeAgentConfig(
 		params.DefaultsConfig,
@@ -118,10 +136,13 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 		params.WorkspaceID,
 	)
 	if merged == nil {
+		span.SetStatus(codes.Error, "agent config not found")
 		return nil, fmt.Errorf("agent config not found")
 	}
 	agentCfg, err := config.FromMap(merged)
 	if err != nil {
+		span.SetStatus(codes.Error, "parse merged config")
+		span.RecordError(err)
 		return nil, fmt.Errorf("parse merged config: %w", err)
 	}
 
@@ -129,6 +150,7 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	if resolvedID == "" {
 		resolvedID = params.AgentID
 	}
+	span.SetAttributes(attribute.String("agent.resolved_id", resolvedID))
 	slog.Info("execAgent: starting",
 		"id", resolvedID,
 		"model", agentCfg.Model,
@@ -148,6 +170,9 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	}
 	if memoryBlock != "" {
 		systemPrompt = fmt.Sprintf("%s\n\n%s", systemPrompt, memoryBlock)
+		span.AddEvent("memory.injected", trace.WithAttributes(
+			attribute.Int("memory.bytes", len(memoryBlock)),
+		))
 		slog.Debug("injected memory context", "bytes", len(memoryBlock))
 	}
 
@@ -157,8 +182,11 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	// 4. Build tool list: config tools + extra tools (memory tools, etc.)
 	tools, err := s.resolveTools(ctx, params)
 	if err != nil {
+		span.SetStatus(codes.Error, "resolve tools")
+		span.RecordError(err)
 		return nil, fmt.Errorf("resolve tools: %w", err)
 	}
+	span.SetAttributes(attribute.Int("agent.tool_count", len(tools)))
 
 	// 5. Build the agent config
 	ac := &agent.AgentConfig{
@@ -181,6 +209,8 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	// 6. Create the agent and runner
 	ag, err := agent.NewAgent(ctx, ac, opts)
 	if err != nil {
+		span.SetStatus(codes.Error, "create agent")
+		span.RecordError(err)
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
 	r := agent.NewRunner(ctx, ag)
@@ -190,6 +220,8 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 
 	// 8. Execute — return the iterator for caller-driven consumption
 	iter := r.Query(ctx, query)
+	span.SetAttributes(attribute.String("agent.message_id", ""))
+	span.SetStatus(codes.Ok, "")
 	return &ExecAgentResult{
 		Events:    iter,
 		AgentID:   resolvedID,

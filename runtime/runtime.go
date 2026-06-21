@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"egent-lobehub/agent"
+	"egent-lobehub/keyvault"
+	"egent-lobehub/lock"
 	"egent-lobehub/middleware"
 
 	"github.com/cloudwego/eino/adk"
@@ -30,12 +32,21 @@ type Config struct {
 
 	// PermissionConfig gates tools by user permission (optional).
 	PermissionConfig *middleware.PermissionConfig
+
+	// Lock is the Redis-backed distributed edit lock (optional). When nil,
+	// lock operations are no-ops (fail-open).
+	Lock *lock.Mutex
+
+	// KeyVault encrypts/decrypts secrets at rest (optional). When nil,
+	// encryption/decryption are passthroughs (fail-open).
+	KeyVault *keyvault.Encryptor
 }
 
 // Runtime coordinates the LobeHub Eino agent:
 //   - Holds the agent + runner lifecycle
 //   - Registers tools via ToolResolver (single resolution path)
 //   - Provides Query entrypoint
+//   - Exposes EditLock and KeyVault to HTTP handlers
 type Runtime struct {
 	cfg      Config
 	mu       sync.Mutex
@@ -43,6 +54,8 @@ type Runtime struct {
 	agent    adk.Agent
 	runner   *adk.Runner
 	started  bool
+	editLock *lock.Mutex
+	keyVault *keyvault.Encryptor
 }
 
 // New creates a runtime with the given config. The agent is not built
@@ -57,12 +70,29 @@ func New(ctx context.Context, cfg *Config) (*Runtime, error) {
 	if cfg.ToolResultMaxLength <= 0 {
 		cfg.ToolResultMaxLength = 25000
 	}
-	r := &Runtime{cfg: *cfg}
+	r := &Runtime{
+		cfg:      *cfg,
+		editLock: cfg.Lock,
+		keyVault: cfg.KeyVault,
+	}
 	r.resolver = NewToolResolver()
 	if cfg.PermissionConfig != nil {
 		r.resolver.WithPermissionConfig(cfg.PermissionConfig)
 	}
 	return r, nil
+}
+
+// EditLock returns the distributed edit lock (may be nil/disabled).
+// Callers should treat a nil *lock.Mutex as fail-open.
+func (r *Runtime) EditLock() *lock.Mutex {
+	return r.editLock
+}
+
+// KeyVault returns the at-rest encryptor (may be nil/disabled).
+// Callers should treat a nil *keyvault.Encryptor as fail-open
+// passthrough.
+func (r *Runtime) KeyVault() *keyvault.Encryptor {
+	return r.keyVault
 }
 
 // Resolver returns the underlying ToolResolver for direct registration
@@ -155,7 +185,6 @@ func (r *Runtime) Started() bool {
 	defer r.mu.Unlock()
 	return r.started
 }
-
 // Query runs a single conversation turn and returns the event iterator.
 func (r *Runtime) Query(ctx context.Context, query string) (*adk.AsyncIterator[*adk.AgentEvent], error) {
 	if !r.started {

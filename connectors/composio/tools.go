@@ -60,10 +60,10 @@ type Tool struct {
 // endpoint) — both are decoded so the client works against either shape
 // during the v1→v3.1 migration window.
 type rawTool struct {
-	Slug            string          `json:"slug"`
-	Name            string          `json:"name,omitempty"`
-	Description     string          `json:"description,omitempty"`
-	Toolkit         *Toolkit        `json:"toolkit,omitempty"`
+	Slug              string          `json:"slug"`
+	Name              string          `json:"name,omitempty"`
+	Description       string          `json:"description,omitempty"`
+	Toolkit           *Toolkit        `json:"toolkit,omitempty"`
 	InputParameters   json.RawMessage `json:"input_parameters,omitempty"`
 	InputSchema       json.RawMessage `json:"input_schema,omitempty"`
 	Version           string          `json:"version,omitempty"`
@@ -214,11 +214,11 @@ func (e *ExecuteError) Error() string {
 // of content blocks ({type:"text", text:"..."}), or a wrapped error. The
 // client collapses all of these into ExecuteResult.Content.
 type rawExecuteResponse struct {
-	Data       json.RawMessage `json:"data,omitempty"`
-	Result     json.RawMessage `json:"result,omitempty"`
-	Error      json.RawMessage `json:"error,omitempty"`
-	ErrorMsg   string          `json:"error_message,omitempty"`
-	Executed   bool            `json:"executed,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Result   json.RawMessage `json:"result,omitempty"`
+	Error    json.RawMessage `json:"error,omitempty"`
+	ErrorMsg string          `json:"error_message,omitempty"`
+	Executed bool            `json:"executed,omitempty"`
 }
 
 // ExecuteTool runs a single tool on behalf of a connected user. The

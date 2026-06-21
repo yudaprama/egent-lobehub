@@ -20,14 +20,14 @@
 // Base URL: https://backend.composio.dev/api/v3.1
 // Auth:     x-api-key: <COMPOSIO_API_KEY> (project scope)
 //
-//   GET  /connected_accounts                      → ListConnections
-//   GET  /connected_accounts/{id}                 → GetConnection
-//   POST /connected_accounts/link                 → LinkConnection
-//   DELETE /connected_accounts/{id}               → DeleteConnection
-//   GET  /auth_configs                            → ListAuthConfigs
-//   POST /auth_configs                            → CreateManagedAuthConfig
-//   GET  /tools?toolkit_slug=…                    → GetTools / GetToolsForApp
-//   POST /tools/execute/{slug}                    → ExecuteTool
+//	GET  /connected_accounts                      → ListConnections
+//	GET  /connected_accounts/{id}                 → GetConnection
+//	POST /connected_accounts/link                 → LinkConnection
+//	DELETE /connected_accounts/{id}               → DeleteConnection
+//	GET  /auth_configs                            → ListAuthConfigs
+//	POST /auth_configs                            → CreateManagedAuthConfig
+//	GET  /tools?toolkit_slug=…                    → GetTools / GetToolsForApp
+//	POST /tools/execute/{slug}                    → ExecuteTool
 //
 // Not covered: triggers, files upload, tool router sessions, the workbench
 // — none of these are needed by egent-lobehub today.

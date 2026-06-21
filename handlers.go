@@ -91,6 +91,20 @@ func toolsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// secureHealthHandler reports whether the lock and keyvault subsystems
+// are configured. This is for operational visibility — no secrets are
+// leaked.
+func secureHealthHandler(w http.ResponseWriter, _ *http.Request) {
+	lockEnabled := rt.EditLock() != nil && rt.EditLock().Enabled()
+	kvEnabled := rt.KeyVault() != nil && rt.KeyVault().Enabled()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":          "ok",
+		"lock_enabled":    lockEnabled,
+		"keyvault_enabled": kvEnabled,
+	})
+}
+
 func chatCompletionsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

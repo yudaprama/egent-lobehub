@@ -163,18 +163,18 @@ func (s *RESTAccountStore) Resolve(ctx context.Context, userID, appIdentifier st
 // `custom_params` column is a jsonb blob whose `composio` sub-object
 // holds the connection id and lifecycle state.
 type pluginRow struct {
-	ID          string `json:"id"`
-	Identifier  string `json:"identifier"`
-	UserID      string `json:"user_id"`
+	ID           string `json:"id"`
+	Identifier   string `json:"identifier"`
+	UserID       string `json:"user_id"`
 	CustomParams struct {
 		Composio *composioPlugin `json:"composio"`
 	} `json:"customParams"`
 }
 
 type composioPlugin struct {
-	AppSlug           string `json:"appSlug"`
-	AuthConfigID      string `json:"authConfigId"`
+	AppSlug            string `json:"appSlug"`
+	AuthConfigID       string `json:"authConfigId"`
 	ConnectedAccountID string `json:"connectedAccountId"`
-	RedirectURL       string `json:"redirectUrl"`
-	Status            string `json:"status"` // PENDING | ACTIVE | FAILED
+	RedirectURL        string `json:"redirectUrl"`
+	Status             string `json:"status"` // PENDING | ACTIVE | FAILED
 }
