@@ -13,8 +13,16 @@ jobs:
   build:
     name: Build all targets
     runs-on: ubuntu-latest
+    env:
+      # github.com/kawai-network/x is a private repo; fetch it directly via git
+      # (with the token configured below) instead of the public Go module proxy.
+      GOPRIVATE: github.com/kawai-network/*
     steps:
       - uses: actions/checkout@v4
+
+      - name: Authenticate git for private Go modules
+        # Lets `go mod download` reach private github.com/kawai-network/* deps.
+        run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/kawai-network/".insteadOf "https://github.com/kawai-network/"
 
       - uses: actions/setup-go@v5
         with:
