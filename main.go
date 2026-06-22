@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"egent-lobehub/config"
 	"egent-lobehub/connectors/composio"
 	composioeino "egent-lobehub/connectors/composio/eino"
 	"egent-lobehub/keyvault"
@@ -94,10 +95,12 @@ func main() {
 
 	ctx := context.Background()
 
-	// Initialize OpenTelemetry tracing (after ctx is declared)
-	tracingEnabled := os.Getenv("OTLP_ENABLED") == "1" || os.Getenv("OTLP_ENABLED") == "true"
+	// Initialize OpenTelemetry tracing (after ctx is declared).
+	// Tracing is on by default (planoctl injects OTEL_TRACING_GRPC_ENDPOINT);
+	// set OTLP_ENABLED=0|false to opt out.
+	tracingDisabled := os.Getenv("OTLP_ENABLED") == "0" || os.Getenv("OTLP_ENABLED") == "false"
 	tracingShutdown, tracingErr := tracing.Init(ctx, tracing.Config{
-		Enabled:     tracingEnabled,
+		Enabled:     !tracingDisabled,
 		Endpoint:    tracing.ParseEndpoint(),
 		ServiceName: "egent-lobehub",
 		SampleRate:  tracing.ParseSampleRate(),
@@ -162,14 +165,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Always wire memory tools (4 tools). They use an in-memory store — swap
-	// for a Postgres-backed store in production.
-	memMgr := memory.NewManager(memory.NewInMemoryStore())
+	// Wire memory store — MuninnDB (cognitive memory) when MUNINN_URL is set,
+	// otherwise in-memory (dev/test). MuninnDB provides context-aware recall
+	// via semantic activation scoring and Hebbian learning.
+	var memStore memory.Store
+	if muninnURL := os.Getenv("MUNINN_URL"); muninnURL != "" {
+		muninnToken := os.Getenv("MUNINN_TOKEN")
+		muninnStore := memory.NewMuninnStore(muninnURL, muninnToken)
+		if muninnStore.Health(ctx) {
+			memStore = muninnStore
+			slog.Info("memory: MuninnDB store enabled", "url", muninnURL)
+		} else {
+			slog.Warn("memory: MuninnDB unreachable, falling back to in-memory store", "url", muninnURL)
+			memStore = memory.NewInMemoryStore()
+		}
+	} else {
+		memStore = memory.NewInMemoryStore()
+		slog.Info("memory: using in-memory store (set MUNINN_URL for cognitive memory)")
+	}
+	memMgr := memory.NewManager(memStore)
 	if err := rt.RegisterTools(memoryTools(memMgr)); err != nil {
 		slog.Error("register memory tools failed", "error", err)
 		os.Exit(1)
 	}
 	slog.Info("memory tools registered", "count", 4)
+
+	// Construct AiAgentService — backs the task worker executor and the
+	// /v1/agent/exec handler. *Runtime satisfies ToolRegistrar.
+	aiSvc := runtime.NewAiAgentService(rt, rt, memMgr)
 
 	// Optional: knowledge_search tool. Wired when the shared Postgres pool
 	// is available (DATABASE_URL or KNOWLEDGE_PG_DSN). The embedder reads
@@ -297,7 +320,7 @@ func main() {
 	// and start polling the lobehub-tasks queue. When unset, the
 	// task HTTP endpoints are still mounted but return 503 for
 	// task operations (the chat-completions API is unaffected).
-	taskWorker := startTaskWorker(ctx, rt)
+	taskWorker := startTaskWorker(ctx, aiSvc)
 
 	// HTTP server with timeouts
 	mux := http.NewServeMux()
@@ -318,16 +341,11 @@ func main() {
 	mux.HandleFunc("/v1/composio/plugins/update", composioUpdatePluginHandler)
 	mux.HandleFunc("/v1/composio/plugins/remove", composioRemovePluginHandler)
 	mux.HandleFunc("/v1/composio/oauth/callback", composioOAuthCallbackHandler)
-	mux.HandleFunc("/v1/files/create", createFileHandler)
-	mux.HandleFunc("/v1/files/remove", removeFileHandler)
-	mux.HandleFunc("/v1/documents/history/save", saveDocumentHistoryHandler)
-	mux.HandleFunc("/v1/documents/history/item", getDocumentHistoryItemHandler)
-	mux.HandleFunc("/v1/documents/history/compare", compareDocumentHistoryItemsHandler)
-	mux.HandleFunc("/v1/documents/update", updateDocumentHandler)
-	mux.HandleFunc("/v1/documents/remove", removeDocumentHandler)
 	mux.HandleFunc("/v1/chat/send", sendChatHandler)
-	mux.HandleFunc("/v1/chat/generate", outputJSONHandler)
 	mux.HandleFunc("/v1/chat/archive-tool-result", archiveToolResultHandler)
+	mux.HandleFunc("/v1/agent/exec", makeAgentExecHandler(aiSvc))
+	mux.HandleFunc("/v1/agent/interventions", handleListInterventions)
+	mux.HandleFunc("/v1/agent/interventions/", handleRespondIntervention)
 
 	addr := "0.0.0.0:" + *port
 	srv := &http.Server{
@@ -412,7 +430,7 @@ func initKeyVault() *keyvault.Encryptor {
 // The store is currently an in-memory implementation suitable for
 // development. Production deployments must wire a Postgres-backed
 // TaskStore (see runtime/task/store.go for the interface).
-func startTaskWorker(ctx context.Context, rt *runtime.Runtime) *task.Worker {
+func startTaskWorker(ctx context.Context, aiSvc *runtime.AiAgentService) *task.Worker {
 	hostPort := os.Getenv("TEMPORAL_HOST_PORT")
 	if hostPort == "" {
 		slog.Info("task worker: TEMPORAL_HOST_PORT not set; task endpoints disabled")
@@ -431,18 +449,22 @@ func startTaskWorker(ctx context.Context, rt *runtime.Runtime) *task.Worker {
 		return nil
 	}
 
-	store := task.NewInMemoryStore()
-	exec := task.NewRuntimeExecutor(nil) // populated lazily by clients in production
-	_ = exec                           // keep the import in the build
-	// We bind the runtime to the executor: in production the executor
-	// wraps runtime.AiAgentService. The mapping is intentionally not
-	// wired here so the chat-completions path stays the single owner
-	// of the runtime; task workflows use a dedicated executor and
-	// can be extended separately.
+	var store task.TaskStore
+	if dbPool != nil {
+		store = task.NewPostgresStore(dbPool)
+		slog.Info("task worker: using Postgres task store")
+	} else {
+		store = task.NewInMemoryStore()
+		slog.Warn("task worker: no Postgres pool; using in-memory task store (tasks lost on restart)")
+	}
+	exec := task.NewRuntimeExecutor(aiSvc, &task.RuntimeExecutorOptions{
+		DefaultsConfig: config.DefaultAgentConfig,
+		ServerConfig:   config.LoadServerDefaults(),
+	})
 	w, err := task.NewWorker(task.WorkerConfig{
 		Client:   client,
 		Store:    store,
-		Executor: nil, // nil → NoopExecutor; production overrides per workflow
+		Executor: exec,
 		Options:  task.WorkflowOptions{TaskQueue: taskQueue},
 	})
 	if err != nil {
@@ -456,7 +478,6 @@ func startTaskWorker(ctx context.Context, rt *runtime.Runtime) *task.Worker {
 		return nil
 	}
 	slog.Info("task worker: started", "host_port", hostPort, "task_queue", taskQueue)
-	_ = rt
 	return w
 }
 

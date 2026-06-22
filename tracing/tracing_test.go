@@ -22,22 +22,24 @@ func TestInitDisabled(t *testing.T) {
 	}
 }
 
-// TestParseEndpointDefault verifies the default endpoint.
+// TestParseEndpointDefault verifies the default endpoint (Alloy's OTLP gRPC
+// receiver on localhost:4317) when no env var is set.
 func TestParseEndpointDefault(t *testing.T) {
-	// Unset env var to test default
+	t.Setenv("OTEL_TRACING_GRPC_ENDPOINT", "")
 	t.Setenv("OTLP_ENDPOINT", "")
 	got := ParseEndpoint()
-	if got != "localhost:4318" {
-		t.Errorf("ParseEndpoint() = %q, want %q", got, "localhost:4318")
+	if got != "localhost:4317" {
+		t.Errorf("ParseEndpoint() = %q, want %q", got, "localhost:4317")
 	}
 }
 
-// TestParseEndpointOverride verifies env var override.
+// TestParseEndpointOverride verifies env var override and that the http(s)://
+// scheme planoctl prepends is stripped (the gRPC client wants a bare host:port).
 func TestParseEndpointOverride(t *testing.T) {
-	t.Setenv("OTLP_ENDPOINT", "otel-collector:4318")
+	t.Setenv("OTEL_TRACING_GRPC_ENDPOINT", "http://otel-collector:4317")
 	got := ParseEndpoint()
-	if got != "otel-collector:4318" {
-		t.Errorf("ParseEndpoint() = %q, want %q", got, "otel-collector:4318")
+	if got != "otel-collector:4317" {
+		t.Errorf("ParseEndpoint() = %q, want %q", got, "otel-collector:4317")
 	}
 }
 

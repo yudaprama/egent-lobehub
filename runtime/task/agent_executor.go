@@ -102,19 +102,46 @@ func NoopProgress(_ any) {}
 
 // RuntimeExecutor is an AgentExecutor backed by the Eino runtime. It
 // holds a reference to the runtime.AiAgentService (which itself holds the
-// Eino runner, tool resolver, and memory manager).
+// Eino runner, tool resolver, and memory manager) plus the layered
+// config sources that ExecAgent needs for the 4-layer merge.
 type RuntimeExecutor struct {
-	mu       sync.Mutex
-	svc      *runtime.AiAgentService
+	mu        sync.Mutex
+	svc       *runtime.AiAgentService
 	interrupt map[string]context.CancelFunc // operationID → cancel
+
+	// Layered config sources (DEFAULT → server → user → agent).
+	// Populated at construction time so every Run call produces a
+	// fully-merged AgentConfig instead of relying on ExecAgent's
+	// internal merge with empty maps.
+	DefaultsConfig map[string]any
+	ServerConfig   map[string]any
+	UserConfig     map[string]any
+	AgentConfig    map[string]any
+}
+
+// RuntimeExecutorOptions carries optional dependencies for
+// NewRuntimeExecutor. All fields are safe to leave zero-valued.
+type RuntimeExecutorOptions struct {
+	DefaultsConfig map[string]any
+	ServerConfig   map[string]any
+	UserConfig     map[string]any
+	AgentConfig    map[string]any
 }
 
 // NewRuntimeExecutor wraps a runtime.AiAgentService as an AgentExecutor.
-func NewRuntimeExecutor(svc *runtime.AiAgentService) *RuntimeExecutor {
-	return &RuntimeExecutor{
+// Pass nil opts for the zero-config default (all config layers empty).
+func NewRuntimeExecutor(svc *runtime.AiAgentService, opts *RuntimeExecutorOptions) *RuntimeExecutor {
+	e := &RuntimeExecutor{
 		svc:       svc,
 		interrupt: make(map[string]context.CancelFunc),
 	}
+	if opts != nil {
+		e.DefaultsConfig = opts.DefaultsConfig
+		e.ServerConfig = opts.ServerConfig
+		e.UserConfig = opts.UserConfig
+		e.AgentConfig = opts.AgentConfig
+	}
+	return e
 }
 
 // Run implements AgentExecutor. It calls ExecAgent and consumes the
@@ -128,16 +155,33 @@ func (e *RuntimeExecutor) Run(ctx context.Context, params AgentRunParams, progre
 		return nil, errors.New("RuntimeExecutor: AiAgentService is nil")
 	}
 
-	// The runtime.AiAgentService.ExecAgent signature takes ExecAgentParams
-	// and returns an iterator. We consume it here so the activity sees a
-	// simple (content, err) result.
+	// Build the agent config layer. If no explicit AgentConfig was
+	// provided, synthesise a minimal one from the resolved params so
+	// MergeAgentConfig always receives a non-nil agent layer.
+	agentCfg := e.AgentConfig
+	if agentCfg == nil {
+		agentCfg = map[string]any{
+			"id": params.AgentID,
+		}
+		if params.Model != "" {
+			agentCfg["model"] = params.Model
+		}
+		if params.Provider != "" {
+			agentCfg["provider"] = params.Provider
+		}
+	}
+
 	execParams := runtime.ExecAgentParams{
-		AgentID:    params.AgentID,
-		UserID:     params.UserID,
-		Model:      params.Model,
-		Provider:   params.Provider,
-		Prompt:     params.Prompt,
-		WorkspaceID: params.WorkspaceID,
+		AgentID:        params.AgentID,
+		UserID:         params.UserID,
+		Model:          params.Model,
+		Provider:       params.Provider,
+		Prompt:         params.Prompt,
+		WorkspaceID:    params.WorkspaceID,
+		DefaultsConfig: e.DefaultsConfig,
+		ServerConfig:   e.ServerConfig,
+		UserConfig:     e.UserConfig,
+		AgentConfig:    agentCfg,
 	}
 
 	result, err := e.svc.ExecAgent(ctx, execParams)

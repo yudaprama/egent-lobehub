@@ -218,8 +218,14 @@ func (s *AiAgentService) ExecAgent(ctx context.Context, params ExecAgentParams) 
 	// 7. Build the query
 	query := buildQuery(systemPrompt, promptContext, params.Prompt)
 
-	// 8. Execute — return the iterator for caller-driven consumption
-	iter := r.Query(ctx, query)
+	// 8. Execute — return the iterator for caller-driven consumption.
+	// Attach the OTel callback handler (when telemetry is on) so each
+	// model/tool call inside the agent loop becomes a span + metric.
+	var runOpts []adk.AgentRunOption
+	if tracing.Handler != nil {
+		runOpts = append(runOpts, adk.WithCallbacks(tracing.Handler))
+	}
+	iter := r.Query(ctx, query, runOpts...)
 	span.SetAttributes(attribute.String("agent.message_id", ""))
 	span.SetStatus(codes.Ok, "")
 	return &ExecAgentResult{

@@ -21,22 +21,50 @@ import (
 //   memories := mgr.Recall(ctx, userID, userQuery)
 //   // memories is injected into the agent's system prompt.
 type Manager struct {
-	store Store
-	mu    sync.RWMutex
+	store     Store
+	cognitive CognitiveStore
+	batch     BatchStore
+	mu        sync.RWMutex
 	// Optional hooks for observability (Phase 4: tracing).
 	OnExtract func(userID string, factCount int)
 	OnRecall  func(userID string, query string, resultCount int)
 }
 
+// BatchStore is an optional interface that Store implementations may
+// satisfy when they can persist multiple facts in one request.
+type BatchStore interface {
+	SetBatch(ctx context.Context, userID string, entries map[string]string) error
+}
+
 // NewManager creates a memory manager backed by the given store.
 func NewManager(store Store) *Manager {
-	return &Manager{store: store}
+	mgr := &Manager{store: store}
+	if cognitive, ok := store.(CognitiveStore); ok {
+		mgr.cognitive = cognitive
+	}
+	if batch, ok := store.(BatchStore); ok {
+		mgr.batch = batch
+	}
+	return mgr
 }
 
 // Recall retrieves relevant memories for a query.
 // Returns a formatted string suitable for injection into a system prompt.
 // Returns empty string if no memories or store error.
 func (m *Manager) Recall(ctx context.Context, userID, query string) string {
+	if m.cognitive != nil {
+		activated, err := m.cognitive.Activate(ctx, userID, []string{query}, 10)
+		if err == nil && len(activated) > 0 {
+			if m.OnRecall != nil {
+				m.OnRecall(userID, query, len(activated))
+			}
+			return FormatActivatedMemories(activated)
+		}
+		if err != nil {
+			slog.Warn("memory activate failed, falling back to search", "error", err)
+		}
+	}
+
 	entries, err := m.store.Search(ctx, userID, query, 10)
 	if err != nil {
 		slog.Warn("memory recall failed", "error", err)
@@ -75,14 +103,23 @@ func (m *Manager) ExtractAndStore(ctx context.Context, userID, text string) erro
 	if len(facts) == 0 {
 		return nil
 	}
-	for key, value := range facts {
-		if err := m.store.Set(ctx, userID, key, value); err != nil {
-			slog.Warn("memory store failed", "key", key, "error", err)
-			continue
+	stored := len(facts)
+	if m.batch != nil {
+		if err := m.batch.SetBatch(ctx, userID, facts); err != nil {
+			slog.Warn("memory batch store failed", "error", err)
+			stored = 0
+		}
+	} else {
+		for key, value := range facts {
+			if err := m.store.Set(ctx, userID, key, value); err != nil {
+				slog.Warn("memory store failed", "key", key, "error", err)
+				stored--
+				continue
+			}
 		}
 	}
-	if m.OnExtract != nil {
-		m.OnExtract(userID, len(facts))
+	if m.OnExtract != nil && stored > 0 {
+		m.OnExtract(userID, stored)
 	}
 	return nil
 }

@@ -5,21 +5,21 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
+	"github.com/cloudwego/eino/callbacks"
+	"egent-lobehub/internal/otelcallback"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Config holds the tracing configuration.
+// Config holds the tracing/telemetry configuration.
 type Config struct {
-	// Enabled controls whether tracing is active.
+	// Enabled controls whether tracing/telemetry is active.
 	Enabled bool
-	// Endpoint is the OTLP HTTP endpoint (e.g. "localhost:4318").
+	// Endpoint is the OTLP gRPC endpoint in host:port form
+	// (e.g. "localhost:4317"). planoctl injects this via
+	// OTEL_TRACING_GRPC_ENDPOINT.
 	Endpoint string
 	// ServiceName is the OpenTelemetry service name.
 	ServiceName string
@@ -27,50 +27,42 @@ type Config struct {
 	SampleRate float64
 }
 
-// Init initializes OpenTelemetry tracing with an OTLP HTTP exporter.
+// Handler is the Eino callback handler produced by Init, once telemetry is
+// enabled. It emits an OTel span + metrics for every model/tool/agent call.
+// Callers attach it via adk.WithCallbacks(Handler). It is nil while telemetry
+// is disabled.
+var Handler callbacks.Handler
+
+// Init initializes OpenTelemetry tracing + metrics via the generic
+// eino-ext opentelemetry callback (OTLP gRPC → Alloy → Grafana Cloud), and
+// registers the TracerProvider/MeterProvider globally so the package-level
+// manual spans (see Tracer) share the same exporters.
+//
 // It returns a shutdown function that should be called on process exit.
-// When disabled or misconfigured, it returns a no-op shutdown and logs a warning.
+// When disabled, it returns a no-op shutdown and leaves Handler nil.
 func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error, err error) {
 	if !cfg.Enabled {
 		slog.Info("tracing: disabled")
+		Handler = nil
 		return func(context.Context) error { return nil }, nil
 	}
 
-	// Build resource
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(cfg.ServiceName),
-			semconv.ServiceVersion(versionFromEnv()),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("tracing: build resource: %w", err)
+	h, sd, herr := otelcallback.NewHandler(ctx, &otelcallback.Config{
+		ExportEndpoint: cfg.Endpoint,
+		ServiceName:    cfg.ServiceName,
+		EnableTracing:  true,
+		EnableMetrics:  true,
+		Insecure:       true,
+		SampleRate:     cfg.SampleRate,
+		ResourceAttributes: map[string]string{
+			"service.version": versionFromEnv(),
+		},
+	})
+	if herr != nil {
+		return nil, fmt.Errorf("tracing: init provider: %w", herr)
 	}
 
-	// Build OTLP HTTP exporter
-	exporter, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint(cfg.Endpoint),
-		otlptracehttp.WithInsecure(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("tracing: create exporter: %w", err)
-	}
-
-	// Build tracer provider
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(cfg.SampleRate)),
-	)
-
-	// Register as global provider
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	Handler = h
 
 	slog.Info("tracing: initialized",
 		"endpoint", cfg.Endpoint,
@@ -78,30 +70,39 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 		"sample_rate", cfg.SampleRate,
 	)
 
-	return tp.Shutdown, nil
+	return sd, nil
 }
 
-// Tracer returns a tracer from the global provider with the given name.
+// Tracer returns a tracer wrapper for the given component name. The underlying
+// otel.Tracer is resolved lazily from the global provider on each Start call,
+// so this is safe to assign at package-init time — the global provider is only
+// registered once Init runs in main.
 func Tracer(name string) *TracerWrapper {
-	return &TracerWrapper{tracer: otel.Tracer(name)}
+	return &TracerWrapper{name: name}
 }
 
-// TracerWrapper wraps an OpenTelemetry tracer with convenience methods.
+// TracerWrapper wraps an OpenTelemetry tracer name with a lazy Start.
 type TracerWrapper struct {
-	tracer trace.Tracer
+	name string
 }
 
-// Trace creates a new span with the given name.
-func (t *TracerWrapper) Start(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
-	return t.tracer.Start(ctx, name, opts...)
+// Start resolves the global tracer and opens a new span with the given name.
+func (t *TracerWrapper) Start(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	return otel.Tracer(t.name).Start(ctx, spanName, opts...)
 }
 
-// ParseEndpoint reads OTLP_ENDPOINT from env or returns default.
+// ParseEndpoint reads OTEL_TRACING_GRPC_ENDPOINT (injected by planoctl as
+// "http://localhost:4317"), strips the URL scheme (the gRPC client wants a
+// bare host:port), and defaults to localhost:4317 — Alloy's OTLP gRPC
+// receiver.
 func ParseEndpoint() string {
-	if v := os.Getenv("OTLP_ENDPOINT"); v != "" {
-		return v
+	v := os.Getenv("OTEL_TRACING_GRPC_ENDPOINT")
+	if v == "" {
+		return "localhost:4317"
 	}
-	return "localhost:4318"
+	v = strings.TrimPrefix(v, "https://")
+	v = strings.TrimPrefix(v, "http://")
+	return v
 }
 
 // ParseSampleRate reads OTLP_SAMPLE_RATE from env or returns default.
