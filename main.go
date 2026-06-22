@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"egent-lobehub/config"
+	"egent-lobehub/authz"
 	"egent-lobehub/connectors/composio"
 	composioeino "egent-lobehub/connectors/composio/eino"
 	"egent-lobehub/keyvault"
@@ -46,6 +47,10 @@ var (
 	version string
 	rt      *runtime.Runtime
 	dbPool  *pgxpool.Pool
+	// ketoClient is constructed from KETO_READ_URL/KETO_WRITE_URL.
+	// It is nil when those env vars are unset, in which case
+	// workspace-scoped permission checks pass through.
+	ketoClient *authz.Client
 )
 
 func main() {
@@ -166,22 +171,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Wire memory store. MuninnDB is required — the binary panics at
-	// startup if MUNINN_URL is unset or the service is unreachable.
-	// There is no in-memory fallback: a missing MuninnDB is a fatal
-	// configuration error, not a silent degradation.
+	// Wire memory store. Two failure modes are distinguished:
+	//   - MUNINN_URL unset: the operator didn't configure cognitive memory
+	//     (dev/CI). Degrade to NoopStore — never crash. Manager.Recall
+	//     returns "" and the memory tools report empty/no-memory.
+	//   - MUNINN_URL set but unreachable: a real misconfiguration. Fatal.
+	// This keeps commit f298e57's tightening for the misconfig case while
+	// restoring a boot path for environments that don't run MuninnDB.
+	var memStore memory.Store
 	muninnURL := os.Getenv("MUNINN_URL")
 	if muninnURL == "" {
-		slog.Error("memory: MUNINN_URL is required (no in-memory fallback)")
-		os.Exit(1)
+		slog.Warn("memory: MUNINN_URL unset — using NoopStore (no cognitive recall); install MuninnDB and set MUNINN_URL for cognitive memory")
+		memStore = memory.NoopStore{}
+	} else {
+		s := memory.NewMuninnStore(muninnURL, os.Getenv("MUNINN_TOKEN"))
+		if !s.Health(ctx) {
+			slog.Error("memory: MuninnDB configured but unreachable at startup", "url", muninnURL)
+			os.Exit(1)
+		}
+		slog.Info("memory: MuninnDB store enabled", "url", muninnURL)
+		memStore = s
 	}
-	muninnToken := os.Getenv("MUNINN_TOKEN")
-	memStore := memory.NewMuninnStore(muninnURL, muninnToken)
-	if !memStore.Health(ctx) {
-		slog.Error("memory: MuninnDB unreachable at startup", "url", muninnURL)
-		os.Exit(1)
-	}
-	slog.Info("memory: MuninnDB store enabled", "url", muninnURL)
 	memMgr := memory.NewManager(memStore)
 	if err := rt.RegisterTools(memoryTools(memMgr)); err != nil {
 		slog.Error("register memory tools failed", "error", err)
@@ -193,6 +203,19 @@ func main() {
 	// /v1/agent/exec handler. *Runtime satisfies ToolRegistrar.
 	aiSvc := runtime.NewAiAgentService(rt, rt, memMgr)
 
+	// Construct the Ory Keto client from KETO_READ_URL/KETO_WRITE_URL.
+	// When unset, the client is nil and palace writes run without
+	// workspace-scope checks (personal-scope deployment).
+	ketoClient = authz.New(os.Getenv("KETO_READ_URL"), os.Getenv("KETO_WRITE_URL"))
+	if ketoClient.Enabled() {
+		slog.Info("authz: Ory Keto enabled",
+			"read_url", os.Getenv("KETO_READ_URL"),
+			"write_url", os.Getenv("KETO_WRITE_URL"))
+	} else {
+		ketoClient = nil
+		slog.Info("authz: Ory Keto disabled (KETO_READ_URL/KETO_WRITE_URL not set); palace writes pass through")
+	}
+
 	var palaceHandler *palace.Handler
 
 	// Optional: knowledge_search tool. Wired when the shared Postgres pool
@@ -203,9 +226,6 @@ func main() {
 	if dbPool != nil {
 		slog.Info("knowledge: wiring knowledge_search tool")
 		embedder := buildKnowledgeEmbedder()
-		if embedder == nil {
-			slog.Warn("knowledge: embedder not configured; tool will report 'not configured' for every query")
-		}
 
 		palaceEmbedder, err := palace.NewEmbedder(embedder)
 		if err != nil {
@@ -220,19 +240,26 @@ func main() {
 		palaceHandler = palace.NewHandler(palaceStore)
 		slog.Info("memory palace: write handlers enabled")
 
-		kSvc, err := knowledge.NewService(ctx, dbPool, embedder)
-		if err != nil {
-			slog.Error("knowledge: create service failed", "error", err)
-			os.Exit(1)
-		}
-		if kSvc != nil {
-			defer kSvc.Close()
-			knowledgeTool := knowledge.NewKnowledgeSearchTool(kSvc)
-			if err := rt.RegisterTools([]einoTool.BaseTool{knowledgeTool}); err != nil {
-				slog.Error("knowledge: register tool failed", "error", err)
+		// knowledge_search needs an embedder. When none is configured, skip the
+		// tool (agent runs without RAG) instead of failing startup. The palace
+		// store above already tolerates a nil embedder (it omits embeddings).
+		if embedder == nil {
+			slog.Info("knowledge: embedder not configured; knowledge_search tool disabled (agent runs without RAG)")
+		} else {
+			kSvc, err := knowledge.NewService(ctx, dbPool, embedder)
+			if err != nil {
+				slog.Error("knowledge: create service failed", "error", err)
 				os.Exit(1)
 			}
-			slog.Info("knowledge: knowledge_search tool registered")
+			if kSvc != nil {
+				defer kSvc.Close()
+				knowledgeTool := knowledge.NewKnowledgeSearchTool(kSvc)
+				if err := rt.RegisterTools([]einoTool.BaseTool{knowledgeTool}); err != nil {
+					slog.Error("knowledge: register tool failed", "error", err)
+					os.Exit(1)
+				}
+				slog.Info("knowledge: knowledge_search tool registered")
+			}
 		}
 	} else {
 		slog.Info("knowledge: no shared Postgres pool; knowledge_search tool disabled")
@@ -358,10 +385,24 @@ func main() {
 	mux.HandleFunc("/v1/chat/send", sendChatHandler)
 	mux.HandleFunc("/v1/chat/archive-tool-result", archiveToolResultHandler)
 	if palaceHandler != nil {
-		palaceHandler.Register(mux)
+		palaceHandler.RegisterWithAuth(mux, buildPalaceAuth(ketoClient))
 	} else {
 		mux.HandleFunc("/v1/memory/", memoryPalaceNotConfiguredHandler)
 		mux.HandleFunc("/v1/memory/all", memoryPalaceNotConfiguredHandler)
+	}
+	// Memory extraction endpoints (Phase 5). Always mounted when
+	// dbPool is available, regardless of whether the palace
+	// store is configured — extraction needs the DB but not the
+	// palace embedder. Wrap in the palace auth middleware so the
+	// request context carries the trusted user-id.
+	if dbPool != nil {
+		extMux := http.NewServeMux()
+		extMux.HandleFunc("/v1/memory/extraction/start", extractionStartHandler(dbPool, buildPalaceAuth(ketoClient)))
+		extMux.HandleFunc("/v1/memory/extraction/task/", extractionStatusHandler(dbPool))
+		authMW := &palace.AuthMiddleware{}
+		mux.Handle("/v1/memory/extraction/", authMW.Wrap(extMux))
+	} else {
+		mux.HandleFunc("/v1/memory/extraction/", memoryPalaceNotConfiguredHandler)
 	}
 	mux.HandleFunc("/v1/agent/exec", makeAgentExecHandler(aiSvc))
 	mux.HandleFunc("/v1/agent/interventions", handleListInterventions)

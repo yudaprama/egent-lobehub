@@ -75,25 +75,28 @@ func (f *fakeStore) HealthCheck(_ context.Context) error                        
 // handler mux and returns the recorded response.
 func request(t *testing.T, h *Handler, method, path string, body string, userID string) *httptest.ResponseRecorder {
 	t.Helper()
+	return requestWithAuth(t, h, method, path, body, userID, nil)
+}
+
+func requestWithAuth(t *testing.T, h *Handler, method, path string, body, userID string, auth AuthChecker) *httptest.ResponseRecorder {
+	t.Helper()
 	mux := http.NewServeMux()
-	h.Register(mux)
-	var bodyReader *strings.Reader
-	if body != "" {
-		bodyReader = strings.NewReader(body)
-	} else {
-		bodyReader = strings.NewReader("")
-	}
+	h.RegisterWithAuth(mux, auth)
 	var req *http.Request
 	if body != "" {
-		req = httptest.NewRequest(method, path, bodyReader)
+		req = httptest.NewRequest(method, path, strings.NewReader(body))
 	} else {
 		req = httptest.NewRequest(method, path, nil)
 	}
 	if userID != "" {
 		req.Header.Set("x-arch-actor-id", userID)
 	}
+	// Wrap with AuthMiddleware so the request context carries the
+	// user-id and workspace-id that handlers read via
+	// UserIDFromContext. Mirrors the production wiring in main.go.
+	wrapped := (&AuthMiddleware{}).Wrap(mux)
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	wrapped.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -171,6 +174,43 @@ func TestHandler_Register_NilHandlerIsNoop(t *testing.T) {
 	mux := http.NewServeMux()
 	// Should not panic.
 	h.Register(mux)
+}
+
+func TestHandler_Auth_RejectsAnonymous(t *testing.T) {
+	h := NewHandler(newFakeStore())
+	// No x-arch-actor-id → middleware should reject.
+	rec := requestWithAuth(t, h, http.MethodPost, "/v1/memory/identity",
+		`{"description":"alice"}`, "", RejectAll{})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_Auth_RejectsForbidden(t *testing.T) {
+	h := NewHandler(newFakeStore())
+	body := `{"description":"alice","type":"personal"}`
+	rec := requestWithAuth(t, h, http.MethodPost, "/v1/memory/identity", body, "user-1", RejectAll{})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_Auth_NilIsFailOpen(t *testing.T) {
+	h := NewHandler(newFakeStore())
+	body := `{"description":"alice","type":"personal"}`
+	rec := requestWithAuth(t, h, http.MethodPost, "/v1/memory/identity", body, "user-1", nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 (fail-open), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_Auth_AllowUnauthenticated(t *testing.T) {
+	h := NewHandler(newFakeStore())
+	body := `{"description":"alice","type":"personal"}`
+	rec := requestWithAuth(t, h, http.MethodPost, "/v1/memory/identity", body, "user-1", AllowUnauthenticated{})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 // notFoundIdentityStore wraps fakeStore but forces UpdateIdentity to

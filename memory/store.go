@@ -41,3 +41,37 @@ type NotFoundError struct {
 func (e *NotFoundError) Error() string {
 	return fmt.Sprintf("memory entry not found: user=%s key=%s", e.UserID, e.Key)
 }
+
+// NoopStore is a stateless Store that persists nothing and recalls nothing.
+// It is the MUNINN_URL-unset fallback so the binary can boot in environments
+// that don't run MuninnDB (dev/CI). Every consumer degrades gracefully:
+// Manager.Recall returns "" (no system-prompt injection) and the memory tools
+// report "no memory found" / empty results instead of erroring. It deliberately
+// does not implement CognitiveStore, so Manager skips the activation path.
+//
+// A MUNINN_URL that is set but points at an unreachable MuninnDB remains a
+// fatal startup error (see main.go) — NoopStore only covers the *unset* case.
+// Production should run MuninnDB (github.com/scrypster/muninndb) and set MUNINN_URL.
+type NoopStore struct{}
+
+// Compile-time guarantee that NoopStore satisfies Store.
+var _ Store = NoopStore{}
+
+func (NoopStore) Set(_ context.Context, _, _, _ string) error { return nil }
+
+// Get returns (nil, nil) so the get-memory tool yields a friendly "no memory
+// found" rather than surfacing an error to the agent — matching the
+// behaviour callers expect for an absent key under degraded memory.
+func (NoopStore) Get(_ context.Context, _, _ string) (*MemoryEntry, error) {
+	return nil, nil
+}
+
+func (NoopStore) Delete(_ context.Context, _, _ string) error { return nil }
+
+func (NoopStore) Search(_ context.Context, _ string, _ string, _ int) ([]MemoryEntry, error) {
+	return nil, nil
+}
+
+func (NoopStore) List(_ context.Context, _ string) ([]MemoryEntry, error) {
+	return nil, nil
+}

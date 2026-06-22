@@ -15,6 +15,21 @@ type mockRows struct {
 	pos  int
 }
 
+// mockRow is a test helper that implements pgx.Row for QueryRow mocks.
+// Returns no columns; tests that use QueryRow can override Scan if
+// they need a specific value.
+type mockRow struct {
+	pgx.Row
+	scanFn func(dest ...any) error
+}
+
+func (r *mockRow) Scan(dest ...any) error {
+	if r.scanFn != nil {
+		return r.scanFn(dest...)
+	}
+	return nil
+}
+
 func (r *mockRows) Next() bool {
 	r.pos++
 	return r.pos <= len(r.data)

@@ -144,7 +144,7 @@ func (h *Handler) identityCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, fmt.Sprintf("invalid identity type %q", in.Type))
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	id, err := h.store.CreateIdentity(ctx, userID, in)
@@ -161,7 +161,7 @@ func (h *Handler) identityItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "missing identity id")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -204,7 +204,7 @@ func (h *Handler) activityCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "activity type is required")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	id, err := h.store.CreateActivity(ctx, userID, in)
@@ -221,7 +221,7 @@ func (h *Handler) activityItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "missing activity id")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -264,7 +264,7 @@ func (h *Handler) contextCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "context title is required")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	id, err := h.store.CreateContext(ctx, userID, in)
@@ -281,7 +281,7 @@ func (h *Handler) contextItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "missing context id")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -320,7 +320,7 @@ func (h *Handler) experienceCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	id, err := h.store.CreateExperience(ctx, userID, in)
@@ -337,7 +337,7 @@ func (h *Handler) experienceItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "missing experience id")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -376,7 +376,7 @@ func (h *Handler) preferenceCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	id, err := h.store.CreatePreference(ctx, userID, in)
@@ -393,7 +393,7 @@ func (h *Handler) preferenceItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "missing preference id")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -427,7 +427,7 @@ func (h *Handler) deleteAll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	userID := userIDFromRequest(r)
+	userID := UserIDFromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := h.store.DeleteAll(ctx, userID); err != nil {

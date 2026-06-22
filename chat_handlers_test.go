@@ -51,6 +51,12 @@ func (m *chatMockPool) Query(ctx context.Context, sql string, args ...any) (pgx.
 	}
 	return &mockRows{}, nil
 }
+func (m *chatMockPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return &mockRow{}
+}
+func (m *chatMockPool) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
 
 func withChatOverride(t *testing.T, fn sendChatFunc) {
 	t.Helper()
@@ -429,4 +435,7 @@ func (m *chatArchiveMockBeginner) Begin(ctx context.Context) (pgx.Tx, error) {
 		return m.tx, nil
 	}
 	return &chatArchiveMockTx{}, nil
+}
+func (m *chatArchiveMockBeginner) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
 }
