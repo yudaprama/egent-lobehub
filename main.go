@@ -24,6 +24,7 @@ import (
 	"egent-lobehub/mcp"
 	mcpeino "egent-lobehub/mcp/eino"
 	"egent-lobehub/memory"
+	"egent-lobehub/memory/palace"
 	"egent-lobehub/middleware"
 	"egent-lobehub/runtime"
 	"egent-lobehub/runtime/task"
@@ -165,24 +166,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Wire memory store — MuninnDB (cognitive memory) when MUNINN_URL is set,
-	// otherwise in-memory (dev/test). MuninnDB provides context-aware recall
-	// via semantic activation scoring and Hebbian learning.
-	var memStore memory.Store
-	if muninnURL := os.Getenv("MUNINN_URL"); muninnURL != "" {
-		muninnToken := os.Getenv("MUNINN_TOKEN")
-		muninnStore := memory.NewMuninnStore(muninnURL, muninnToken)
-		if muninnStore.Health(ctx) {
-			memStore = muninnStore
-			slog.Info("memory: MuninnDB store enabled", "url", muninnURL)
-		} else {
-			slog.Warn("memory: MuninnDB unreachable, falling back to in-memory store", "url", muninnURL)
-			memStore = memory.NewInMemoryStore()
-		}
-	} else {
-		memStore = memory.NewInMemoryStore()
-		slog.Info("memory: using in-memory store (set MUNINN_URL for cognitive memory)")
+	// Wire memory store. MuninnDB is required — the binary panics at
+	// startup if MUNINN_URL is unset or the service is unreachable.
+	// There is no in-memory fallback: a missing MuninnDB is a fatal
+	// configuration error, not a silent degradation.
+	muninnURL := os.Getenv("MUNINN_URL")
+	if muninnURL == "" {
+		slog.Error("memory: MUNINN_URL is required (no in-memory fallback)")
+		os.Exit(1)
 	}
+	muninnToken := os.Getenv("MUNINN_TOKEN")
+	memStore := memory.NewMuninnStore(muninnURL, muninnToken)
+	if !memStore.Health(ctx) {
+		slog.Error("memory: MuninnDB unreachable at startup", "url", muninnURL)
+		os.Exit(1)
+	}
+	slog.Info("memory: MuninnDB store enabled", "url", muninnURL)
 	memMgr := memory.NewManager(memStore)
 	if err := rt.RegisterTools(memoryTools(memMgr)); err != nil {
 		slog.Error("register memory tools failed", "error", err)
@@ -193,6 +192,8 @@ func main() {
 	// Construct AiAgentService — backs the task worker executor and the
 	// /v1/agent/exec handler. *Runtime satisfies ToolRegistrar.
 	aiSvc := runtime.NewAiAgentService(rt, rt, memMgr)
+
+	var palaceHandler *palace.Handler
 
 	// Optional: knowledge_search tool. Wired when the shared Postgres pool
 	// is available (DATABASE_URL or KNOWLEDGE_PG_DSN). The embedder reads
@@ -205,6 +206,20 @@ func main() {
 		if embedder == nil {
 			slog.Warn("knowledge: embedder not configured; tool will report 'not configured' for every query")
 		}
+
+		palaceEmbedder, err := palace.NewEmbedder(embedder)
+		if err != nil {
+			slog.Error("memory palace: create embedder failed", "error", err)
+			os.Exit(1)
+		}
+		palaceStore := palace.NewPgStore(dbPool, palaceEmbedder)
+		if err := palaceStore.HealthCheck(ctx); err != nil {
+			slog.Error("memory palace: health check failed", "error", err)
+			os.Exit(1)
+		}
+		palaceHandler = palace.NewHandler(palaceStore)
+		slog.Info("memory palace: write handlers enabled")
+
 		kSvc, err := knowledge.NewService(ctx, dbPool, embedder)
 		if err != nil {
 			slog.Error("knowledge: create service failed", "error", err)
@@ -222,7 +237,6 @@ func main() {
 	} else {
 		slog.Info("knowledge: no shared Postgres pool; knowledge_search tool disabled")
 	}
-
 	// Optional: Composio 3rd-party SaaS tools (Slack/Gmail/GitHub/etc.).
 	// Wired when both COMPOSIO_API_KEY and PREST_URL are set. The agent
 	// gets one tool per action per connected app for every user who has
@@ -343,6 +357,12 @@ func main() {
 	mux.HandleFunc("/v1/composio/oauth/callback", composioOAuthCallbackHandler)
 	mux.HandleFunc("/v1/chat/send", sendChatHandler)
 	mux.HandleFunc("/v1/chat/archive-tool-result", archiveToolResultHandler)
+	if palaceHandler != nil {
+		palaceHandler.Register(mux)
+	} else {
+		mux.HandleFunc("/v1/memory/", memoryPalaceNotConfiguredHandler)
+		mux.HandleFunc("/v1/memory/all", memoryPalaceNotConfiguredHandler)
+	}
 	mux.HandleFunc("/v1/agent/exec", makeAgentExecHandler(aiSvc))
 	mux.HandleFunc("/v1/agent/interventions", handleListInterventions)
 	mux.HandleFunc("/v1/agent/interventions/", handleRespondIntervention)

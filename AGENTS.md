@@ -137,7 +137,7 @@ HTTP POST /v1/chat/completions
 
 ### `memory` (package `memory`)
 - `Manager` — `ExtractAndStore` (heuristic: name/location/preferences), `Recall` → injected into system prompt
-- `InMemoryStore` — dev/test store; swap for PG-backed in production
+- `MuninnStore` — required store; binary panics at startup if MuninnDB is unreachable
 - `Store` interface: `Set`, `Get`, `Delete`, `Search`, `List`
 - Memory tools: `userMemory_set`, `userMemory_get`, `userMemory_search`, `userMemory_list`
 - User ID scoped via context key (`memory.WithUserID` / `UserIDFromContext`)

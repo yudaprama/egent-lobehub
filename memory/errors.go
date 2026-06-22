@@ -7,8 +7,6 @@ import "errors"
 // (especially the memory tools) can use errors.Is to distinguish a
 // missing-memory condition from a transport / store error.
 //
-// Note: the InMemoryStore implementation returns (nil, nil) for missing
-// keys for backwards compatibility, so it does not produce this error.
-// The MuninnStore produces it when neither the ID cache nor an
+// Note: the MuninnStore produces this error when neither the ID cache nor an
 // activation sweep locates the requested engram.
 var ErrMemoryNotFound = errors.New("memory: entry not found")

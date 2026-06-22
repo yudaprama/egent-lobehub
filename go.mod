@@ -14,6 +14,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/kawai-network/fileprocessor v0.4.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/pgvector/pgvector-go v0.4.0
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/scrypster/muninndb/sdk/go/muninn v0.0.0-20260612122835-b9c61193ca19
 	github.com/tink-crypto/tink-go/v2 v2.3.0
@@ -69,7 +70,6 @@ require (
 	github.com/nexus-rpc/sdk-go v0.6.0 // indirect
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.9 // indirect
-	github.com/pgvector/pgvector-go v0.4.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/robfig/cron v1.2.0 // indirect

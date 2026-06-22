@@ -23,7 +23,7 @@ This contract captures the current API surface for the LobeHub user-memory syste
 
 ### Runtime recall cache
 
-- `egent-lobehub/memory/` (`InMemoryStore` / `MuninnStore`)
+- `egent-lobehub/memory/` (`MuninnStore` only; panic on startup if MuninnDB unreachable)
 - Purpose: lightweight key/value recall injected into `AiAgentService` system prompt
 - Not the source of truth for the structured `/memory` UI
 

@@ -25,8 +25,8 @@ import (
 // The cache is populated on Set and Delete and is safe for concurrent use.
 //
 // When MuninnDB is unavailable (not running, network error), all operations
-// fail gracefully — callers should treat errors as non-fatal (the agent
-// runs without memory context, same as the InMemoryStore fallback).
+// fail with an error — callers should treat these as fatal: the binary panics
+// at startup if MuninnDB is unreachable, and there is no in-memory fallback.
 type MuninnStore struct {
 	client *muninn.Client
 
@@ -205,7 +205,8 @@ func (s *MuninnStore) Delete(ctx context.Context, userID, key string) error {
 }
 
 // Search uses MuninnDB's Activate for context-aware retrieval. Unlike
-// the InMemoryStore's substring matching, this returns memories ranked
+// semantic ranking. Unlike a naive substring store, this returns memories
+// ranked by MuninnDB's activation score (ACT-R base level + Hebbian boost).
 // by relevance score — combining recency, frequency, and semantic
 // similarity (Hebbian-weighted).
 func (s *MuninnStore) Search(ctx context.Context, userID, query string, limit int) ([]MemoryEntry, error) {
