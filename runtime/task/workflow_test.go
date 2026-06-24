@@ -66,6 +66,21 @@ func TestTaskRunWorkflow_HappyPath(t *testing.T) {
 	if result.ModelUsed != "gpt-5" {
 		t.Errorf("expected ModelUsed=gpt-5, got %q", result.ModelUsed)
 	}
+	if result.AssistantContent != "all done" {
+		t.Errorf("expected AssistantContent=all done, got %q", result.AssistantContent)
+	}
+
+	var status TaskStatus
+	resp, err := env.QueryWorkflow("status")
+	if err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if err := resp.Get(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status != TaskStatusPaused {
+		t.Errorf("expected status=paused, got %q", status)
+	}
 
 	// Verify the executor was called.
 	if len(exec.RunCalls) != 1 {

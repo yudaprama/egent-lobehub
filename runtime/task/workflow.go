@@ -318,11 +318,12 @@ func TaskRunWorkflow(ctx workflow.Context, params RunTaskParams) (RunTaskResult,
 	}
 
 	state.Result = RunTaskResult{
-		OperationID:    agentOut.Result.OperationID,
-		TopicID:        agentOut.Result.TopicID,
-		ModelUsed:      agentOut.Result.ModelUsed,
-		TaskID:         task.ID,
-		TaskIdentifier: task.Identifier,
+		OperationID:      agentOut.Result.OperationID,
+		TopicID:          agentOut.Result.TopicID,
+		ModelUsed:        agentOut.Result.ModelUsed,
+		TaskID:           task.ID,
+		TaskIdentifier:   task.Identifier,
+		AssistantContent: agentOut.Result.AssistantContent,
 	}
 
 	// ---- Step 5b: Register the topic link ----
@@ -363,6 +364,9 @@ func TaskRunWorkflow(ctx workflow.Context, params RunTaskParams) (RunTaskResult,
 	}
 
 	state.CurrentStatus = lifecycleResult.NewStatus
+	if !state.CurrentStatus.Valid() {
+		state.CurrentStatus = TaskStatusPaused
+	}
 
 	// ---- Step 7: Cascade downstream tasks ----
 	if lifecycleResult.NewStatus == TaskStatusCompleted {

@@ -32,24 +32,24 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 // allowedStatusFields is the allowlist for UpdateStatus field patches.
 // Prevents SQL injection via arbitrary column names.
 var allowedStatusFields = map[string]bool{
+	"assignee_agent_id":   true,
+	"current_topic_id":    true,
 	"started_at":          true,
 	"completed_at":        true,
 	"error":               true,
 	"total_topics":        true,
-	"consecutive_errors":  true,
-	"schedule_started_at": true,
 }
 
 // ResolveTask implements TaskStore. Looks up by id first, then by
 // identifier.
 func (s *PostgresStore) ResolveTask(ctx context.Context, idOrIdentifier string) (*TaskItem, error) {
 	const q = `
-		SELECT id, identifier, user_id, workspace_id, name, instruction,
+		SELECT id, identifier, created_by_user_id, workspace_id, name, instruction,
 		       status, error, assignee_agent_id, parent_task_id,
 		       current_topic_id, total_topics,
 		       last_heartbeat_at, heartbeat_timeout, heartbeat_interval,
-		       schedule_pattern, automation_mode, consecutive_errors,
-		       schedule_started_at, config,
+		       schedule_pattern, automation_mode, 0 AS consecutive_errors,
+		       NULL::timestamptz AS schedule_started_at, config,
 		       created_at, updated_at, started_at, completed_at
 		FROM tasks
 		WHERE id = $1 OR identifier = $1
@@ -342,7 +342,7 @@ func (s *PostgresStore) GetReviewConfig(_ context.Context, task *TaskItem) (Revi
 func (s *PostgresStore) GetInboxAgentID(ctx context.Context) (string, error) {
 	var id string
 	err := s.pool.QueryRow(ctx,
-		`SELECT id FROM agents WHERE slug = 'inbox' OR "group" = 'inbox' LIMIT 1`).Scan(&id)
+		`SELECT id FROM agents WHERE slug = 'inbox' LIMIT 1`).Scan(&id)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return "agt_inbox", nil

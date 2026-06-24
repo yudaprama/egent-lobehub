@@ -293,9 +293,20 @@ func (w *Worker) handleTaskByID(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		status, err := QueryTaskStatus(r.Context(), w.client, wfID, "")
+		if err != nil || !status.Valid() {
+			if w.cfg.Store != nil {
+				if task, terr := w.cfg.Store.ResolveTask(r.Context(), taskID); terr == nil && task != nil && task.Status.Valid() {
+					status = task.Status
+					err = nil
+				}
+			}
+		}
 		if err != nil {
 			http.Error(rw, fmt.Sprintf("query: %v", err), http.StatusInternalServerError)
 			return
+		}
+		if !status.Valid() {
+			status = TaskStatusPaused
 		}
 		writeJSON(rw, map[string]any{"taskId": taskID, "status": status})
 	case "result":

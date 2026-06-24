@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"egent-lobehub/agent"
 	"egent-lobehub/config"
 	"egent-lobehub/authz"
 	"egent-lobehub/connectors/composio"
@@ -52,6 +53,17 @@ var (
 	// workspace-scoped permission checks pass through.
 	ketoClient *authz.Client
 )
+
+// actorContextMiddleware propagates the edge-injected x-arch-actor-id (+ Authorization)
+// from the request into the context so the model client forwards them to Plano :12000
+// (x-arch-actor-id for billing/tracing attribution; Authorization so :12000's auth
+// edge can re-validate on the internal hop).
+func actorContextMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := agent.ContextWithForwardedHeaders(r.Context(), r.Header.Get("x-arch-actor-id"), r.Header.Get("Authorization"))
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 func main() {
 	versionFlag := flag.Bool("version", false, "print version and exit")
@@ -408,10 +420,19 @@ func main() {
 	mux.HandleFunc("/v1/agent/interventions", handleListInterventions)
 	mux.HandleFunc("/v1/agent/interventions/", handleRespondIntervention)
 
-	addr := "0.0.0.0:" + *port
+	// Bind localhost-only by default: Oathkeeper (:4455) is the public auth
+	// edge in front of this service, so :10531 must not be reachable directly
+	// (a direct caller could spoof extractUserID's x-arch-actor-id / legacy
+	// `kratos:` sources). Override with EGENT_LOBEHUB_BIND=0.0.0.0 only behind
+	// another private network boundary.
+	bind := os.Getenv("EGENT_LOBEHUB_BIND")
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	addr := bind + ":" + *port
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      actorContextMiddleware(mux),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,

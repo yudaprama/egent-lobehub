@@ -152,6 +152,10 @@ type RunTaskResult struct {
 	TaskID string
 	// TaskIdentifier is the human-readable identifier.
 	TaskIdentifier string
+	// AssistantContent is the final assistant message from the agent.
+	// It is exposed for smoke tests and UI status panels; durable transcript
+	// persistence remains owned by the chat/topic layer.
+	AssistantContent string `json:"assistantContent,omitempty"`
 }
 
 // TopicCompleteParams maps to the TS TopicCompleteParams. Carries the data

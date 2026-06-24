@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -10,6 +11,38 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 )
+
+// Propagated identity headers carried from the egent's incoming request to the
+// outbound Plano :12000 model call (x-arch-actor-id for attribution;
+// Authorization so :12000's auth edge can re-validate on the internal hop).
+const (
+	actorIDHeader = "x-arch-actor-id"
+	authHeader    = "Authorization"
+)
+
+type ctxActorIDKey struct{}
+type ctxAuthKey struct{}
+
+// ContextWithForwardedHeaders stashes the incoming actor id + Authorization so
+// the model client's transport can re-apply them on the Plano :12000 call.
+func ContextWithForwardedHeaders(ctx context.Context, actorID, authorization string) context.Context {
+	ctx = context.WithValue(ctx, ctxActorIDKey{}, actorID)
+	return context.WithValue(ctx, ctxAuthKey{}, authorization)
+}
+
+// forwardingTransport re-applies the propagated identity headers from the
+// request context onto the outbound Plano :12000 call.
+type forwardingTransport struct{ base http.RoundTripper }
+
+func (t *forwardingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if v, _ := req.Context().Value(ctxAuthKey{}).(string); v != "" {
+		req.Header.Set(authHeader, v)
+	}
+	if v, _ := req.Context().Value(ctxActorIDKey{}).(string); v != "" {
+		req.Header.Set(actorIDHeader, v)
+	}
+	return t.base.RoundTrip(req)
+}
 
 // AgentConfig holds the agent configuration.
 type AgentConfig struct {
@@ -58,6 +91,11 @@ func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Ag
 		BaseURL: baseURL,
 		Model:   modelName,
 		APIKey:  "EMPTY",
+		// Forward the propagated identity headers (x-arch-actor-id + Authorization)
+		// from the incoming request onto the Plano :12000 call.
+		HTTPClient: &http.Client{Transport: &forwardingTransport{
+			base: http.DefaultTransport.(*http.Transport).Clone(),
+		}},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create chat model: %w", err)
