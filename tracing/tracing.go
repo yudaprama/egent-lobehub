@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/callbacks"
-	"egent-lobehub/internal/otelcallback"
+	"github.com/yudaprama/otelcallback"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 )
