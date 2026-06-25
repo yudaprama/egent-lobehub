@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -72,12 +74,30 @@ func CollectResult(iter *adk.AsyncIterator[*adk.AgentEvent]) string {
 			continue
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil {
-			msg, err := event.Output.MessageOutput.GetMessage()
-			if err != nil {
-				continue
-			}
-			if msg.Role == schema.Assistant && msg.Content != "" {
-				parts = append(parts, msg.Content)
+			mo := event.Output.MessageOutput
+			if mo.IsStreaming {
+				stream := mo.MessageStream
+				for {
+					msg, err := stream.Recv()
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						slog.Warn("stream recv error", "error", err)
+						break
+					}
+					if msg.Role == schema.Assistant && msg.Content != "" {
+						parts = append(parts, msg.Content)
+					}
+				}
+			} else {
+				msg, err := mo.GetMessage()
+				if err != nil {
+					continue
+				}
+				if msg.Role == schema.Assistant && msg.Content != "" {
+					parts = append(parts, msg.Content)
+				}
 			}
 		}
 	}

@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -360,60 +362,125 @@ func streamAgentExecWithIDs(w http.ResponseWriter, r *http.Request, result *runt
 			continue
 		}
 
-		msg, err := event.Output.MessageOutput.GetMessage()
-		if err != nil {
-			continue
-		}
+		mo := event.Output.MessageOutput
+		var msg *schema.Message
+		if mo.IsStreaming {
+			stream := mo.MessageStream
+			for {
+				chunk, err := stream.Recv()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					slog.Warn("stream recv error", "error", err, "operation_id", opID)
+					break
+				}
+				if chunk.Role == schema.Assistant && chunk.Content != "" {
+					writeEvent(agentStreamEvent{
+						Type: "stream_chunk",
+						Data: map[string]any{
+							"chunkType": "text",
+							"content":   chunk.Content,
+						},
+						OperationID: opID,
+						StepIndex:   stepIndex,
+						Timestamp:   now(),
+					})
+				}
+				if chunk.Role == schema.Assistant && len(chunk.ToolCalls) > 0 {
+					toolsCalling := make([]map[string]any, 0, len(chunk.ToolCalls))
+					for _, tc := range chunk.ToolCalls {
+						toolsCalling = append(toolsCalling, map[string]any{
+							"id":   tc.ID,
+							"type": tc.Type,
+							"function": map[string]any{
+								"name":      tc.Function.Name,
+								"arguments": tc.Function.Arguments,
+							},
+						})
+					}
+					writeEvent(agentStreamEvent{
+						Type: "stream_chunk",
+						Data: map[string]any{
+							"chunkType":    "tools_calling",
+							"toolsCalling": toolsCalling,
+						},
+						OperationID: opID,
+						StepIndex:   stepIndex,
+						Timestamp:   now(),
+					})
+				}
+				if chunk.Role == schema.Tool {
+					writeEvent(agentStreamEvent{
+						Type: "tool_end",
+						Data: map[string]any{
+							"isSuccess": true,
+							"result":    chunk.Content,
+						},
+						OperationID: opID,
+						StepIndex:   stepIndex,
+						Timestamp:   now(),
+					})
+					stepIndex++
+				}
+			}
+		} else {
+			var err error
+			msg, err = mo.GetMessage()
+			if err != nil {
+				continue
+			}
 
-		if msg.Role == schema.Assistant && msg.Content != "" {
-			writeEvent(agentStreamEvent{
-				Type: "stream_chunk",
-				Data: map[string]any{
-					"chunkType": "text",
-					"content":   msg.Content,
-				},
-				OperationID: opID,
-				StepIndex:   stepIndex,
-				Timestamp:   now(),
-			})
-		}
-
-		if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
-			toolsCalling := make([]map[string]any, 0, len(msg.ToolCalls))
-			for _, tc := range msg.ToolCalls {
-				toolsCalling = append(toolsCalling, map[string]any{
-					"id":   tc.ID,
-					"type": tc.Type,
-					"function": map[string]any{
-						"name":      tc.Function.Name,
-						"arguments": tc.Function.Arguments,
+			if msg.Role == schema.Assistant && msg.Content != "" {
+				writeEvent(agentStreamEvent{
+					Type: "stream_chunk",
+					Data: map[string]any{
+						"chunkType": "text",
+						"content":   msg.Content,
 					},
+					OperationID: opID,
+					StepIndex:   stepIndex,
+					Timestamp:   now(),
 				})
 			}
-			writeEvent(agentStreamEvent{
-				Type: "stream_chunk",
-				Data: map[string]any{
-					"chunkType":    "tools_calling",
-					"toolsCalling": toolsCalling,
-				},
-				OperationID: opID,
-				StepIndex:   stepIndex,
-				Timestamp:   now(),
-			})
-		}
 
-		if msg.Role == schema.Tool {
-			writeEvent(agentStreamEvent{
-				Type: "tool_end",
-				Data: map[string]any{
-					"isSuccess": true,
-					"result":    msg.Content,
-				},
-				OperationID: opID,
-				StepIndex:   stepIndex,
-				Timestamp:   now(),
-			})
-			stepIndex++
+			if msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 {
+				toolsCalling := make([]map[string]any, 0, len(msg.ToolCalls))
+				for _, tc := range msg.ToolCalls {
+					toolsCalling = append(toolsCalling, map[string]any{
+						"id":   tc.ID,
+						"type": tc.Type,
+						"function": map[string]any{
+							"name":      tc.Function.Name,
+							"arguments": tc.Function.Arguments,
+						},
+					})
+				}
+				writeEvent(agentStreamEvent{
+					Type: "stream_chunk",
+					Data: map[string]any{
+						"chunkType":    "tools_calling",
+						"toolsCalling": toolsCalling,
+					},
+					OperationID: opID,
+					StepIndex:   stepIndex,
+					Timestamp:   now(),
+				})
+			}
+
+			if msg.Role == schema.Tool {
+				writeEvent(agentStreamEvent{
+					Type: "tool_end",
+					Data: map[string]any{
+						"isSuccess": true,
+						"result":    msg.Content,
+					},
+					OperationID: opID,
+					StepIndex:   stepIndex,
+					Timestamp:   now(),
+				})
+				stepIndex++
+			}
 		}
 	}
 }

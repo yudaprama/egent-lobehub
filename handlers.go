@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -209,13 +211,31 @@ func handleNonStreamingResponse(w http.ResponseWriter, req ChatCompletionRequest
 			return
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil {
-			msg, err := event.Output.MessageOutput.GetMessage()
-			if err != nil {
-				slog.Warn("get message error", "error", err)
-				continue
-			}
-			if msg.Role == schema.Assistant && msg.Content != "" {
-				finalContent.WriteString(msg.Content)
+			mo := event.Output.MessageOutput
+			if mo.IsStreaming {
+				stream := mo.MessageStream
+				for {
+					msg, err := stream.Recv()
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						slog.Warn("stream recv error", "error", err)
+						break
+					}
+					if msg.Role == schema.Assistant && msg.Content != "" {
+						finalContent.WriteString(msg.Content)
+					}
+				}
+			} else {
+				msg, err := mo.GetMessage()
+				if err != nil {
+					slog.Warn("get message error", "error", err)
+					continue
+				}
+				if msg.Role == schema.Assistant && msg.Content != "" {
+					finalContent.WriteString(msg.Content)
+				}
 			}
 		}
 	}
@@ -255,77 +275,86 @@ func handleStreamingResponse(w http.ResponseWriter, req ChatCompletionRequest, i
 	writer := bufio.NewWriter(w)
 	requestID := generateID()
 
+	writeChunk := func(content string) {
+		chunk := ChatCompletionChunk{
+			ID:      requestID,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   req.Model,
+			Choices: []ChatCompletionChunkChoice{
+				{
+					Index: 0,
+					Delta: ChatCompletionMessage{
+						Role:    "assistant",
+						Content: content,
+					},
+				},
+			},
+		}
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(writer, "data: %s\n\n", data)
+		writer.Flush()
+		flusher.Flush()
+	}
+
+	writeDone := func() {
+		finishReason := "stop"
+		chunk := ChatCompletionChunk{
+			ID:      requestID,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   req.Model,
+			Choices: []ChatCompletionChunkChoice{
+				{Index: 0, Delta: ChatCompletionMessage{}, FinishReason: &finishReason},
+			},
+		}
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(writer, "data: %s\n\n", data)
+		fmt.Fprintf(writer, "data: [DONE]\n\n")
+		writer.Flush()
+		flusher.Flush()
+	}
+
 	for {
 		event, ok := iter.Next()
 		if !ok {
-			finishReason := "stop"
-			chunk := ChatCompletionChunk{
-				ID:      requestID,
-				Object:  "chat.completion.chunk",
-				Created: time.Now().Unix(),
-				Model:   req.Model,
-				Choices: []ChatCompletionChunkChoice{
-					{Index: 0, Delta: ChatCompletionMessage{}, FinishReason: &finishReason},
-				},
-			}
-			data, _ := json.Marshal(chunk)
-			fmt.Fprintf(writer, "data: %s\n\n", data)
-			fmt.Fprintf(writer, "data: [DONE]\n\n")
-			writer.Flush()
-			flusher.Flush()
+			writeDone()
 			break
 		}
 
 		if event.Err != nil {
 			slog.Warn("agent error", "error", event.Err)
-			errChunk := ChatCompletionChunk{
-				ID:      requestID,
-				Object:  "chat.completion.chunk",
-				Created: time.Now().Unix(),
-				Model:   req.Model,
-				Choices: []ChatCompletionChunkChoice{
-					{
-						Index: 0,
-						Delta: ChatCompletionMessage{
-							Role:    "assistant",
-							Content: fmt.Sprintf("\n[Error: %v]", event.Err),
-						},
-					},
-				},
-			}
-			errData, _ := json.Marshal(errChunk)
-			fmt.Fprintf(writer, "data: %s\n\n", errData)
-			writer.Flush()
-			flusher.Flush()
+			writeChunk(fmt.Sprintf("\n[Error: %v]", event.Err))
+			writeDone()
 			break
 		}
 
 		if event.Output != nil && event.Output.MessageOutput != nil {
-			msg, err := event.Output.MessageOutput.GetMessage()
-			if err != nil {
-				slog.Warn("get message error", "error", err)
-				continue
-			}
-			if msg.Role == schema.Assistant && msg.Content != "" {
-				chunk := ChatCompletionChunk{
-					ID:      requestID,
-					Object:  "chat.completion.chunk",
-					Created: time.Now().Unix(),
-					Model:   req.Model,
-					Choices: []ChatCompletionChunkChoice{
-						{
-							Index: 0,
-							Delta: ChatCompletionMessage{
-								Role:    "assistant",
-								Content: msg.Content,
-							},
-						},
-					},
+			mo := event.Output.MessageOutput
+			if mo.IsStreaming {
+				stream := mo.MessageStream
+				for {
+					msg, err := stream.Recv()
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						slog.Warn("stream recv error", "error", err)
+						break
+					}
+					if msg.Role == schema.Assistant && msg.Content != "" {
+						writeChunk(msg.Content)
+					}
 				}
-				data, _ := json.Marshal(chunk)
-				fmt.Fprintf(writer, "data: %s\n\n", data)
-				writer.Flush()
-				flusher.Flush()
+			} else {
+				msg, err := mo.GetMessage()
+				if err != nil {
+					slog.Warn("get message error", "error", err)
+					continue
+				}
+				if msg.Role == schema.Assistant && msg.Content != "" {
+					writeChunk(msg.Content)
+				}
 			}
 		}
 	}

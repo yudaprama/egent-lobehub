@@ -122,6 +122,7 @@ func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Ag
 // NewRunner creates an Eino Runner that wraps the agent for query execution.
 func NewRunner(ctx context.Context, agent adk.Agent) *adk.Runner {
 	return adk.NewRunner(ctx, adk.RunnerConfig{
-		Agent: agent,
+		Agent:           agent,
+		EnableStreaming: true,
 	})
 }
