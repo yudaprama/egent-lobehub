@@ -24,6 +24,11 @@ var (
 	ErrKetoUnhealthy = errors.New("authz: Keto request failed")
 )
 
+// WorkspaceNamespace is the Keto namespace name for workspace RBAC. It MUST
+// match the OPL class name in keto/namespaces/workspace.ts (`class Workspace`),
+// which Keto loads verbatim — a casing mismatch yields "Unknown namespace".
+const WorkspaceNamespace = "Workspace"
+
 // Tuple is a relationship tuple in Keto's Zanzibar model.
 type Tuple struct {
 	Namespace string `json:"namespace"`
@@ -121,7 +126,7 @@ func (c *Client) Check(ctx context.Context, params CheckParams) (bool, error) {
 // relation should be "view", "write", or "manage".
 func (c *Client) CheckWorkspace(ctx context.Context, workspaceID, userID, relation string) (bool, error) {
 	return c.Check(ctx, CheckParams{
-		Namespace: "workspace",
+		Namespace: WorkspaceNamespace,
 		Object:    workspaceID,
 		Relation:  relation,
 		SubjectID: userID,
@@ -291,7 +296,7 @@ func (c *Client) ListWorkspacesForUser(ctx context.Context, userID string) ([]st
 			}
 
 			params := url.Values{}
-			params.Set("namespace", "workspace")
+			params.Set("namespace", WorkspaceNamespace)
 			params.Set("relation", rel)
 			params.Set("subject_id", userID)
 			if pageToken != "" {
