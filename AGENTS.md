@@ -78,7 +78,8 @@ main.go — HTTP server, routes, OpenAI-compatible request/response types
 ├── config/       — Layered agent config merging (default → server → user → agent)
 ├── connectors/composio/         — Composio REST client (v3.1, stdlib only)
 ├── connectors/composio/eino/    — Eino tool adapter: `ComposioTool` + `Builder` + `RESTAccountStore` (pREST)
-├── composio_handlers.go          — `/v1/composio/*` HTTP handlers (connection lifecycle, OAuth callback)
+├── composio_handlers.go          — `/v1/composio/*` HTTP handlers (connection lifecycle, tool catalog/execute, OAuth callback)
+├── connector_handlers.go         — `/v1/connector/credentials/*` HTTP handlers (keyvault encrypt/decrypt for `user_connectors.credentials`)
 ```
 
 ### Control flow
@@ -274,6 +275,27 @@ can drive connection lifecycle through Go instead of Next.js.
 
 **Test coverage:** 15 handler tests with stdlib `httptest` (incl. `composioListToolsHandler` + `composioExecuteToolHandler` with a fake pREST account store).
 
+### `connector_handlers.go` (package `main`)
+The **keyvault-only** half of the connector migration (Phase 2 of
+`CONNECTOR_WIRING_PLAN.md`). Per lobehub AGENTS rule #1, the frontend keeps
+Tier-1 CRUD on `user_connectors` via pREST; egent exposes only the AES-GCM
+crypto pREST cannot do (same split as the composio pilot). Reuses the runtime
+keyvault (`rt.KeyVault()`, `KEY_VAULTS_SECRET`) — Tink format on write,
+legacy-TS-hex auto-detect on read, fail-open when unset.
+
+| Method | Path | Purpose | TS parity |
+|---|---|---|---|
+| POST | `/v1/connector/credentials/encrypt` | `EncryptString(JSON.stringify(credentials))` → ciphertext | `ConnectorModel.create/update` encrypt half |
+| POST | `/v1/connector/credentials/decrypt` | `DecryptString(ciphertext)` → credentials object | `ConnectorModel.getForEdit` decrypt half |
+
+The FE orchestrates: `create` (encrypt + pREST upsert-on-identifier),
+`getForEdit` (pREST select + decrypt + strip OAuth2/`clientSecret`),
+`update` (camelCase→snake_case + encrypt credentials). `oidcConfig` +
+`startOAuth`/`syncTools` are still TS (Phases 3–4).
+
+**Test coverage:** 5 handler tests (round-trip, fail-open nil keyvault, empty
+ciphertext, 405, undecryptable → 502).
+
 ## API endpoints
 
 | Endpoint | Method | Description |
@@ -289,6 +311,8 @@ can drive connection lifecycle through Go instead of Next.js.
 | `/v1/composio/tools` | GET | List a Composio app's actions (`GetToolsForApp`) |
 | `/v1/composio/tools/execute` | POST | Execute a Composio action (server-resolved `connectedAccountId`) |
 | `/v1/composio/oauth/callback` | GET | OAuth popup landing (auto-closes after 300ms) |
+| `/v1/connector/credentials/encrypt` | POST | AES-GCM encrypt connector credentials (keyvault; FE stores ciphertext in `user_connectors.credentials`) |
+| `/v1/connector/credentials/decrypt` | POST | Decrypt connector credentials (keyvault; `getForEdit` pre-fill). FE strips OAuth2/clientSecret after. |
 | `/health` | GET | Liveness check |
 | `/health/ready` | GET | Readiness probe: 200 or 503 |
 

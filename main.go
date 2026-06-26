@@ -167,6 +167,9 @@ func main() {
 		slog.Error("create runtime failed", "error", err)
 		os.Exit(1)
 	}
+	// Share the runtime's keyvault with the connector credential handlers
+	// (POST /v1/connector/credentials/{encrypt,decrypt}). nil = disabled.
+	connectorKeyVault = rt.KeyVault()
 	defer rt.Close()
 
 	// Build tools from config and register with runtime.
@@ -406,6 +409,8 @@ func main() {
 	mux.HandleFunc("/v1/composio/tools", composioListToolsHandler)
 	mux.HandleFunc("/v1/composio/tools/execute", composioExecuteToolHandler)
 	mux.HandleFunc("/v1/composio/oauth/callback", composioOAuthCallbackHandler)
+	mux.HandleFunc("/v1/connector/credentials/encrypt", connectorEncryptCredentialsHandler)
+	mux.HandleFunc("/v1/connector/credentials/decrypt", connectorDecryptCredentialsHandler)
 	mux.HandleFunc("/v1/chat/send", sendChatHandler)
 	mux.HandleFunc("/v1/chat/archive-tool-result", archiveToolResultHandler)
 	if palaceHandler != nil {
