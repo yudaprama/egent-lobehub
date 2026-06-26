@@ -29,6 +29,16 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
+// topicAgentID returns the assignee agent id only when it is a real agent id
+// (prefix "agt_"), so a non-id slug like "inbox" never violates the topics →
+// agents FK. Returns nil (→ NULL agent_id) otherwise.
+func topicAgentID(assigneeAgentID *string) *string {
+	if assigneeAgentID != nil && strings.HasPrefix(*assigneeAgentID, "agt_") {
+		return assigneeAgentID
+	}
+	return nil
+}
+
 // allowedStatusFields is the allowlist for UpdateStatus field patches.
 // Prevents SQL injection via arbitrary column names.
 var allowedStatusFields = map[string]bool{
@@ -195,12 +205,51 @@ func (s *PostgresStore) SetCurrentTopic(ctx context.Context, taskID string, topi
 
 // AddTaskTopic implements TaskStore.
 func (s *PostgresStore) AddTaskTopic(ctx context.Context, taskID string, topicID string, operationID string, seq int) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO task_topics (task_id, topic_id, operation_id, seq, status)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT DO NOTHING`,
-		taskID, topicID, operationID, seq, string(TopicStatusRunning))
-	return err
+	// Resolve the owning user/workspace/agent/title from the task. The
+	// task_topics row requires user_id (NOT NULL) and topic_id carries an FK
+	// to topics(id) — so the topic row must exist first. The Go runtime does
+	// not create topics (the TS BFF historically did), so we create it here as
+	// part of registering the turn. Done in a tx for atomicity + idempotency.
+	var userID string
+	var workspaceID, assigneeAgentID, name *string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT created_by_user_id, workspace_id, assignee_agent_id, name
+		 FROM tasks WHERE id = $1`, taskID,
+	).Scan(&userID, &workspaceID, &assigneeAgentID, &name); err != nil {
+		return fmt.Errorf("AddTaskTopic: resolve task %s: %w", taskID, err)
+	}
+
+	// Only set the topic's agent_id when the assignee is a real agent id
+	// (agt_…). A slug like "inbox" would violate the agents FK, so leave null.
+	agentID := topicAgentID(assigneeAgentID)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("AddTaskTopic: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Create the topic row up-front (idempotent — a continued/duplicate topic
+	// is left untouched). trigger='task' marks it as task-originated.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO topics (id, user_id, workspace_id, agent_id, title, trigger)
+		 VALUES ($1, $2, $3, $4, $5, 'task')
+		 ON CONFLICT (id) DO NOTHING`,
+		topicID, userID, workspaceID, agentID, name,
+	); err != nil {
+		return fmt.Errorf("AddTaskTopic: create topic %s: %w", topicID, err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO task_topics (task_id, topic_id, user_id, workspace_id, operation_id, seq, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (task_id, topic_id) DO NOTHING`,
+		taskID, topicID, userID, workspaceID, operationID, seq, string(TopicStatusRunning),
+	); err != nil {
+		return fmt.Errorf("AddTaskTopic: link task_topic: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // UpdateTaskTopicStatus implements TaskStore.
