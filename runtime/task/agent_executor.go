@@ -78,6 +78,11 @@ type AgentRunParams struct {
 	// ContinueTopicID, when set, resumes a previous topic instead of
 	// creating a new one.
 	ContinueTopicID string
+	// TopicID / OperationID, when set, are the ids pre-assigned by the HTTP
+	// handler (so /v1/tasks/run can return them synchronously). When empty the
+	// executor mints them.
+	TopicID     string
+	OperationID string
 	// ApprovalMode controls the user-intervention gate. Defaults to
 	// "headless" (auto-approve). The LobeHub task runner always uses
 	// headless mode because approval flows are surfaced at the topic
@@ -214,17 +219,25 @@ func (e *RuntimeExecutor) Run(ctx context.Context, params AgentRunParams, progre
 	// (workflow.go Step 5b: ActivityAddTaskTopic). The Eino runtime does not
 	// yet emit its own operation id, so we assign one here — it keys the
 	// task_topics row and the Interrupt cancel map.
+	operationID := params.OperationID
+	if operationID == "" {
+		operationID = newOperationID()
+	}
+
 	return &AgentRunResult{
-		OperationID:      newOperationID(),
-		TopicID:          resolveTopicID(params.ContinueTopicID),
+		OperationID:      operationID,
+		TopicID:          resolveTopicID(params.TopicID, params.ContinueTopicID),
 		ModelUsed:        result.ModelUsed,
 		AssistantContent: content,
 	}, nil
 }
 
-// resolveTopicID reuses a continued topic id when present, otherwise mints a
-// fresh one. Extracted for testability.
-func resolveTopicID(continueTopicID string) string {
+// resolveTopicID returns the pre-assigned topic id when set, then a continued
+// topic id, otherwise mints a fresh one. Extracted for testability.
+func resolveTopicID(preassigned, continueTopicID string) string {
+	if preassigned != "" {
+		return preassigned
+	}
 	if continueTopicID != "" {
 		return continueTopicID
 	}

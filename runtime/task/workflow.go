@@ -289,6 +289,8 @@ func TaskRunWorkflow(ctx workflow.Context, params RunTaskParams) (RunTaskResult,
 		Title:           extraPromptTitle(params.ExtraPrompt, task),
 		FileIDs:         promptOut.FileIDs,
 		ContinueTopicID: params.ContinueTopicID,
+		TopicID:         params.TopicID,
+		OperationID:     params.OperationID,
 		ApprovalMode:    runtime.ApprovalHeadless,
 	}
 

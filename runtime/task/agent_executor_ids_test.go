@@ -31,12 +31,16 @@ func TestNewOperationID_Unique(t *testing.T) {
 }
 
 func TestResolveTopicID(t *testing.T) {
-	// Continued topic is reused verbatim.
-	if got := resolveTopicID("tpc_existing123"); got != "tpc_existing123" {
+	// Pre-assigned id wins over everything.
+	if got := resolveTopicID("tpc_preassigned", "tpc_continue"); got != "tpc_preassigned" {
+		t.Fatalf("preassigned path: want tpc_preassigned, got %q", got)
+	}
+	// Continued topic is reused when no pre-assignment.
+	if got := resolveTopicID("", "tpc_existing123"); got != "tpc_existing123" {
 		t.Fatalf("continue path: want tpc_existing123, got %q", got)
 	}
-	// Fresh topic is minted with the right shape.
-	got := resolveTopicID("")
+	// Fresh topic is minted with the right shape when neither is set.
+	got := resolveTopicID("", "")
 	if !strings.HasPrefix(got, "tpc_") {
 		t.Fatalf("fresh path: want tpc_ prefix, got %q", got)
 	}

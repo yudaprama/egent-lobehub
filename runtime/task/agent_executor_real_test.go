@@ -113,10 +113,12 @@ func TestRuntimeExecutor_RealRunAgentExecution_NonEmptyContent(t *testing.T) {
 	out, err := a.RunAgentExecution(context.Background(), RunAgentExecutionInput{
 		Task: newTestTask("agt_real_1", "summarize-the-news"),
 		Params: AgentRunParams{
-			AgentID: "agt_real_1",
-			UserID:  "user_real_1",
-			Model:   "stub-model",
-			Prompt:  "Say hello.",
+			AgentID:     "agt_real_1",
+			UserID:      "user_real_1",
+			Model:       "stub-model",
+			Prompt:      "Say hello.",
+			TopicID:     "tpc_preassigned1",
+			OperationID: "op_preassigned1",
 		},
 	})
 	if err != nil {
@@ -124,6 +126,15 @@ func TestRuntimeExecutor_RealRunAgentExecution_NonEmptyContent(t *testing.T) {
 	}
 	if out == nil || out.Result == nil || strings.TrimSpace(out.Result.AssistantContent) == "" {
 		t.Fatalf("expected non-empty assistantContent from real executor, got: %+v\n%s", out, dumpReqs(&mu, &reqs))
+	}
+	// The executor must honor the handler's pre-assigned ids (keystone #2) so
+	// /v1/tasks/run can return them synchronously and the workflow persists the
+	// same topic the caller streams from.
+	if out.Result.TopicID != "tpc_preassigned1" {
+		t.Fatalf("expected pre-assigned TopicID to be honored, got %q", out.Result.TopicID)
+	}
+	if out.Result.OperationID != "op_preassigned1" {
+		t.Fatalf("expected pre-assigned OperationID to be honored, got %q", out.Result.OperationID)
 	}
 	t.Logf("real executor assistantContent=%q modelUsed=%q",
 		out.Result.AssistantContent, out.Result.ModelUsed)

@@ -130,6 +130,14 @@ type RunTaskParams struct {
 	// ExtraPrompt augments the task instruction with an ad-hoc prefix
 	// (e.g. "focus on the second milestone").
 	ExtraPrompt string
+
+	// TopicID / OperationID are pre-assigned by the HTTP handler before the
+	// (async) workflow starts, so /v1/tasks/run can return them synchronously
+	// for the caller to attach a stream. When empty (e.g. direct/internal
+	// callers), the executor mints them. For a continued topic, TopicID equals
+	// ContinueTopicID and only OperationID is fresh.
+	TopicID     string
+	OperationID string
 }
 
 // RunTaskResult mirrors the TS RunTaskResult. It extends ExecAgentResult

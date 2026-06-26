@@ -254,6 +254,14 @@ func (w *Worker) handleRunTask(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "taskId is required", http.StatusBadRequest)
 		return
 	}
+
+	// Pre-assign the topic + operation ids before the (async) workflow starts,
+	// so the caller gets them back synchronously to attach a stream. The
+	// executor inside the workflow uses these instead of minting its own. For
+	// a continued topic the topic id is reused; only the operation id is fresh.
+	req.TopicID = resolveTopicID("", req.ContinueTopicID)
+	req.OperationID = newOperationID()
+
 	run, err := StartTaskWorkflow(r.Context(), w.client, req, w.cfg.Options)
 	if err != nil {
 		http.Error(rw, fmt.Sprintf("start workflow: %v", err), http.StatusInternalServerError)
@@ -261,9 +269,12 @@ func (w *Worker) handleRunTask(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(rw).Encode(map[string]any{
-		"workflowId": run.GetID(),
-		"runId":      run.GetRunID(),
-		"status":     "started",
+		"taskId":      req.TaskID,
+		"topicId":     req.TopicID,
+		"operationId": req.OperationID,
+		"workflowId":  run.GetID(),
+		"runId":       run.GetRunID(),
+		"status":      "started",
 	})
 }
 
