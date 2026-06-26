@@ -3,11 +3,26 @@ package task
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"egent-lobehub/runtime"
 )
+
+// newTopicID mints a LobeHub-style topic id (prefix "tpc_", matching the TS
+// idGenerator('topics') convention) for a fresh task turn.
+func newTopicID() string {
+	return "tpc_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+}
+
+// newOperationID mints an agent operation id used to key the task_topics row
+// and the Interrupt cancel map.
+func newOperationID() string {
+	return uuid.NewString()
+}
 
 // AgentExecutor is the boundary between the Temporal workflow layer and the
 // underlying agent runtime. The workflow never calls the Eino runtime
@@ -193,12 +208,27 @@ func (e *RuntimeExecutor) Run(ctx context.Context, params AgentRunParams, progre
 	content := runtime.CollectResult(result.Events)
 	progress(map[string]any{"phase": "completed", "bytes": len(content)})
 
+	// Mint the topic + operation ids for this turn. For a continued topic we
+	// reuse the caller's topic id; otherwise a fresh one is created. Returning
+	// non-empty ids activates the topic-link persistence in the workflow
+	// (workflow.go Step 5b: ActivityAddTaskTopic). The Eino runtime does not
+	// yet emit its own operation id, so we assign one here — it keys the
+	// task_topics row and the Interrupt cancel map.
 	return &AgentRunResult{
-		OperationID:      "", // runtime currently doesn't expose operation id
-		TopicID:          "", // topic id is created by the TS BFF today
+		OperationID:      newOperationID(),
+		TopicID:          resolveTopicID(params.ContinueTopicID),
 		ModelUsed:        result.ModelUsed,
 		AssistantContent: content,
 	}, nil
+}
+
+// resolveTopicID reuses a continued topic id when present, otherwise mints a
+// fresh one. Extracted for testability.
+func resolveTopicID(continueTopicID string) string {
+	if continueTopicID != "" {
+		return continueTopicID
+	}
+	return newTopicID()
 }
 
 // Interrupt implements AgentExecutor. Cancels the agent context associated
