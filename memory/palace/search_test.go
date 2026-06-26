@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	fp "github.com/kawai-network/fileprocessor"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"egent-lobehub/memory"
@@ -218,4 +219,72 @@ func TestPgStore_Search_Integration(t *testing.T) {
 	if len(res) != 1 || res[0].MemoryLayer != LayerIdentity {
 		t.Fatalf("layer search returned %#v", res)
 	}
+}
+
+// TestPgStore_Search_Cosine_Integration proves semantic (cosine) ranking
+// against real Postgres + pgvector + a live OpenAI embedder. Skipped unless
+// both PALACE_TEST_DSN and OPENAI_API_KEY are set. The query shares no
+// substring with the expected top row, so a hit there can only come from
+// vector similarity (not the ILIKE fallback).
+func TestPgStore_Search_Cosine_Integration(t *testing.T) {
+	dsn := os.Getenv("PALACE_TEST_DSN")
+	key := os.Getenv("OPENAI_API_KEY")
+	if dsn == "" || key == "" {
+		t.Skip("set PALACE_TEST_DSN and OPENAI_API_KEY to run the cosine integration test")
+	}
+
+	embedURL := os.Getenv("OPENAI_EMBEDDINGS_URL")
+	if embedURL == "" {
+		embedURL = "https://api.openai.com/v1/embeddings"
+	}
+	model := os.Getenv("OPENAI_EMBEDDINGS_MODEL")
+	if model == "" {
+		model = "text-embedding-3-small"
+	}
+	embedder, err := NewEmbedder(fp.NewOpenAIEmbedder(embedURL, key, model, requiredDim))
+	if err != nil {
+		t.Fatalf("embedder: %v", err)
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	store := NewPgStore(pool, embedder)
+	const uid = "palace-cosine-it"
+	t.Cleanup(func() { _ = store.DeleteAll(ctx, uid) })
+	if err := store.DeleteAll(ctx, uid); err != nil {
+		t.Fatalf("pre-clean: %v", err)
+	}
+
+	seeds := []string{
+		"loves spicy Thai food, especially green curry with extra chili",
+		"works as a backend software engineer writing Go services",
+		"prefers quiet libraries and long-form reading on weekends",
+	}
+	for _, s := range seeds {
+		if _, err := store.CreatePreference(ctx, uid, PreferenceInput{ConclusionDirectives: s}); err != nil {
+			t.Fatalf("seed %q: %v", s, err)
+		}
+	}
+
+	// Paraphrase with no shared keyword vs the food row ("cuisine"/"enjoy
+	// eating" never appear in the seed). Cosine must still rank it first.
+	res, err := store.Search(ctx, uid, SearchInput{Query: "what kind of cuisine does this person enjoy eating", Limit: 3})
+	if err != nil {
+		t.Fatalf("cosine search: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatal("cosine search returned no rows")
+	}
+	if !strings.Contains(strings.ToLower(res[0].Summary), "thai") {
+		t.Fatalf("top result should be the food row, got %q (score %.3f)", res[0].Summary, res[0].Score)
+	}
+	if res[0].Score <= 0 {
+		t.Fatalf("ranked result should carry a positive cosine score, got %.3f", res[0].Score)
+	}
+	t.Logf("cosine top: %q score=%.3f", res[0].Summary, res[0].Score)
 }
