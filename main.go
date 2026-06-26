@@ -252,6 +252,16 @@ func main() {
 		palaceHandler = palace.NewHandler(palaceStore)
 		slog.Info("memory palace: write handlers enabled")
 
+		// memory_palace_search agent tool. Registered whenever the palace
+		// store exists — it tolerates a nil embedder (recency fallback), so
+		// it is useful even without semantic ranking.
+		palaceSearchTool := palace.NewSearchTool(palaceStore)
+		if err := rt.RegisterTools([]einoTool.BaseTool{palaceSearchTool}); err != nil {
+			slog.Error("memory palace: register search tool failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("memory palace: memory_palace_search tool registered")
+
 		// knowledge_search needs an embedder. When none is configured, skip the
 		// tool (agent runs without RAG) instead of failing startup. The palace
 		// store above already tolerates a nil embedder (it omits embeddings).

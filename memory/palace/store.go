@@ -69,6 +69,12 @@ type Store interface {
 	// /v1/memory/all endpoint (mirrors lambda/userMemory.deleteAll).
 	DeleteAll(ctx context.Context, userID string) error
 
+	// Search returns the user's memories ranked by relevance to the
+	// query. Semantic (cosine) ranking when an embedder is configured,
+	// ILIKE + recency otherwise. Replaces the LobeHub
+	// userMemories.searchMemory / toolSearchMemory router procedures.
+	Search(ctx context.Context, userID string, in SearchInput) ([]SearchResult, error)
+
 	// HealthCheck returns nil when the pool is reachable. Used by
 	// main.go to gate the /v1/memory/* route family — the routes
 	// return 503 if the palace store is not configured.

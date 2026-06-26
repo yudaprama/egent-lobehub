@@ -70,6 +70,9 @@ func (f *fakeStore) UpdatePreference(_ context.Context, _, _ string, _ Preferenc
 func (f *fakeStore) DeletePreference(_ context.Context, _, _ string) error                    { return nil }
 func (f *fakeStore) DeleteAll(_ context.Context, _ string) error                              { return nil }
 func (f *fakeStore) HealthCheck(_ context.Context) error                                       { return nil }
+func (f *fakeStore) Search(_ context.Context, _ string, _ SearchInput) ([]SearchResult, error) {
+	return nil, nil
+}
 
 // request is a small helper that runs a single request through the
 // handler mux and returns the recorded response.
