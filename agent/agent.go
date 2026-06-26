@@ -12,31 +12,39 @@ import (
 	"github.com/cloudwego/eino/compose"
 )
 
-// Propagated identity headers carried from the egent's incoming request to the
-// outbound Plano :12000 model call (x-arch-actor-id for attribution;
-// Authorization so :12000's auth edge can re-validate on the internal hop).
+// Identity headers carried from the egent's incoming request to the outbound
+// Plano model call. The auth edge injects x-arch-actor-id on the way in; the
+// egent forwards it so brightstaff can stamp billing.actor_id on the LLM span.
+//
+// Outbound target is Plano's loopback-only internal ingress (:12010), which
+// trusts callers by network position plus a static x-arch-internal-key header
+// (PLANO_INTERNAL_KEY) — no per-hop Oathkeeper/Talos round-trip. The client's
+// Talos Authorization is intentionally NOT forwarded: :12010 does not validate it.
 const (
-	actorIDHeader = "x-arch-actor-id"
-	authHeader    = "Authorization"
+	actorIDHeader     = "x-arch-actor-id"
+	internalKeyHeader = "x-arch-internal-key"
 )
 
 type ctxActorIDKey struct{}
-type ctxAuthKey struct{}
 
-// ContextWithForwardedHeaders stashes the incoming actor id + Authorization so
-// the model client's transport can re-apply them on the Plano :12000 call.
-func ContextWithForwardedHeaders(ctx context.Context, actorID, authorization string) context.Context {
-	ctx = context.WithValue(ctx, ctxActorIDKey{}, actorID)
-	return context.WithValue(ctx, ctxAuthKey{}, authorization)
+// ContextWithForwardedHeaders stashes the incoming actor id so the model
+// client's transport can re-apply it on the outbound :12010 call. The second
+// argument (the client's Authorization) is accepted for call-site compatibility
+// but no longer forwarded — see the note above.
+func ContextWithForwardedHeaders(ctx context.Context, actorID, _ string) context.Context {
+	return context.WithValue(ctx, ctxActorIDKey{}, actorID)
 }
 
-// forwardingTransport re-applies the propagated identity headers from the
-// request context onto the outbound Plano :12000 call.
-type forwardingTransport struct{ base http.RoundTripper }
+// forwardingTransport stamps the internal static key and the propagated actor
+// id onto the outbound Plano :12010 call.
+type forwardingTransport struct {
+	base        http.RoundTripper
+	internalKey string
+}
 
 func (t *forwardingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if v, _ := req.Context().Value(ctxAuthKey{}).(string); v != "" {
-		req.Header.Set(authHeader, v)
+	if t.internalKey != "" {
+		req.Header.Set(internalKeyHeader, t.internalKey)
 	}
 	if v, _ := req.Context().Value(ctxActorIDKey{}).(string); v != "" {
 		req.Header.Set(actorIDHeader, v)
@@ -63,7 +71,7 @@ type AgentOptions struct {
 // NewAgent creates an Eino ChatModelAgent. Tools should be pre-wrapped
 // with middleware by the caller (Runtime uses ToolResolver for this).
 func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Agent, error) {
-	baseURL := "http://localhost:12000/v1"
+	baseURL := "http://localhost:12010/v1"
 	modelName := "custom/glm-5.1"
 	agentName := "LobeHubAgent"
 
@@ -91,10 +99,11 @@ func NewAgent(ctx context.Context, cfg *AgentConfig, opts *AgentOptions) (adk.Ag
 		BaseURL: baseURL,
 		Model:   modelName,
 		APIKey:  "EMPTY",
-		// Forward the propagated identity headers (x-arch-actor-id + Authorization)
-		// from the incoming request onto the Plano :12000 call.
+		// Stamp the internal static key + forward x-arch-actor-id onto the Plano
+		// :12010 (internal ingress) call.
 		HTTPClient: &http.Client{Transport: &forwardingTransport{
-			base: http.DefaultTransport.(*http.Transport).Clone(),
+			base:        http.DefaultTransport.(*http.Transport).Clone(),
+			internalKey: os.Getenv("PLANO_INTERNAL_KEY"),
 		}},
 	})
 	if err != nil {
