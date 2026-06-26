@@ -11,22 +11,25 @@ import (
 )
 
 // RESTAccountStore resolves a user's connected_account_id by calling the
-// LobeHub pREST endpoint for the plugins table, which has Tier 1 user_id
-// filtering on ai_providers, agents, files, and friends. The
-// `plugins` table itself is NOT in the user_id_filters list (LobeHub
-// stores per-user plugin data in PluginModel, which is scoped by the
-// query layer), so the store filters the response by user_id locally
-// for safety.
+// LobeHub pREST endpoint for the user_installed_plugins table (the same
+// table PluginModel writes — see lobehub/packages/database/src/models/plugin.ts
+// and the new src/services/composio.ts). The table is NOT in pREST's
+// user_id_filters list, so the store filters the response by user_id
+// locally for safety (defence in depth).
 //
 // Endpoints used:
 //
-//	GET /lobehub/public/plugins?identifier=eq.<id>&_size=1
+//	GET /lobehub/public/user_installed_plugins?identifier=eq.<id>&_size=1
 //
-// The response item has the shape:
+// pREST returns Postgres column names verbatim (snake_case); the
+// `custom_params` JSONB blob is returned as stored (its inner composio
+// object keeps the camelCase keys the TS service wrote). The response
+// item has the shape:
 //
 //	{
 //	  "identifier": "gmail",
-//	  "customParams": { "composio": { "connectedAccountId": "ca_...", "status": "ACTIVE" } }
+//	  "user_id": "user-1",
+//	  "custom_params": { "composio": { "connectedAccountId": "ca_...", "status": "ACTIVE" } }
 //	}
 //
 // "status" must be ACTIVE for the adapter to use the connection. The TS
@@ -34,8 +37,8 @@ import (
 type RESTAccountStore struct {
 	// baseURL is the pREST root, e.g. "http://localhost:3000".
 	baseURL string
-	// table is "lobehub/public/plugins" by default; override for tests
-	// or for a different database (e.g. "yarsew/public/plugins").
+	// table is "lobehub/public/user_installed_plugins" by default; override
+	// for tests or for a different database (e.g. "yarsew/public/user_installed_plugins").
 	table string
 	// httpClient is the transport. Defaults to http.Client with 5s timeout.
 	httpClient *http.Client
@@ -60,7 +63,7 @@ func WithPRESTDatabase(db string) RESTAccountStoreOption {
 }
 
 // WithPRESTTable overrides the table path. Defaults to
-// "lobehub/public/plugins". Pass without the leading slash.
+// "lobehub/public/user_installed_plugins". Pass without the leading slash.
 func WithPRESTTable(table string) RESTAccountStoreOption {
 	return func(s *RESTAccountStore) { s.table = strings.TrimLeft(table, "/") }
 }
@@ -83,7 +86,7 @@ func NewRESTAccountStore(baseURL string, opts ...RESTAccountStoreOption) *RESTAc
 	}
 	s := &RESTAccountStore{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		table:      "lobehub/public/plugins",
+		table:      "lobehub/public/user_installed_plugins",
 		database:   "lobehub",
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 	}
@@ -159,16 +162,17 @@ func (s *RESTAccountStore) Resolve(ctx context.Context, userID, appIdentifier st
 	return cp.ConnectedAccountID, nil
 }
 
-// pluginRow mirrors the LobeHub `plugins` table shape. The
-// `custom_params` column is a jsonb blob whose `composio` sub-object
-// holds the connection id and lifecycle state.
+// pluginRow mirrors the LobeHub `user_installed_plugins` table shape
+// (pREST returns snake_case column names verbatim). The `custom_params`
+// column is a jsonb blob whose `composio` sub-object holds the connection
+// id and lifecycle state (stored camelCase by the TS service).
 type pluginRow struct {
 	ID           string `json:"id"`
 	Identifier   string `json:"identifier"`
 	UserID       string `json:"user_id"`
 	CustomParams struct {
 		Composio *composioPlugin `json:"composio"`
-	} `json:"customParams"`
+	} `json:"custom_params"`
 }
 
 type composioPlugin struct {

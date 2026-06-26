@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -347,6 +348,154 @@ func composioOAuthCallbackHandler(w http.ResponseWriter, r *http.Request) {
     </script>
   </body>
 </html>`, http.StatusOK)
+}
+
+// ----- tool catalog + execution (retire tools/composio.ts: getActions / listActions / executeAction) -----
+
+type composioToolInfo struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+type composioListToolsResp struct {
+	Tools []composioToolInfo `json:"tools"`
+}
+
+// composioListToolsHandler mirrors tools/composio.ts:getActions + listActions
+// (both call composio.tools.getRawComposioTools({ toolkits: [appSlug] })).
+// One endpoint serves both the pre-connect browse (useFetchAppTools) and the
+// post-ACTIVE tool fetch (refreshComposioConnectionStatus).
+func composioListToolsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if composioCli == nil {
+		composioWriteJSON(w, composioListToolsResp{Tools: []composioToolInfo{}})
+		return
+	}
+	appSlug := r.URL.Query().Get("appSlug")
+	if appSlug == "" {
+		http.Error(w, "appSlug is required", http.StatusBadRequest)
+		return
+	}
+	tools, err := composioCli.GetToolsForApp(r.Context(), appSlug)
+	if err != nil {
+		slog.Error("composio: list tools failed", "app", appSlug, "error", err)
+		http.Error(w, "failed to list tools", http.StatusBadGateway)
+		return
+	}
+	out := make([]composioToolInfo, 0, len(tools))
+	for _, t := range tools {
+		// Match the TS projection: name = slug || name. Slug is the canonical
+		// Composio action name and is what the executor passes back as toolSlug.
+		name := t.Slug
+		if name == "" {
+			name = t.Name
+		}
+		schema := t.ArgsSchema
+		if len(schema) == 0 {
+			schema = json.RawMessage(`{"properties":{},"type":"object"}`)
+		}
+		out = append(out, composioToolInfo{
+			Name:        name,
+			Description: t.Description,
+			InputSchema: schema,
+		})
+	}
+	composioWriteJSON(w, composioListToolsResp{Tools: out})
+}
+
+type composioExecuteToolReq struct {
+	Identifier string         `json:"identifier"`
+	ToolSlug   string         `json:"toolSlug"`
+	ToolArgs   map[string]any `json:"toolArgs,omitempty"`
+}
+
+type composioContentBlock struct {
+	Text string `json:"text"`
+	Type string `json:"type"`
+}
+
+type composioExecuteState struct {
+	Content []composioContentBlock `json:"content"`
+	IsError bool                   `json:"isError"`
+}
+
+type composioExecuteToolResp struct {
+	Content string               `json:"content"`
+	State   composioExecuteState `json:"state"`
+	Success bool                 `json:"success"`
+}
+
+// composioExecuteToolHandler mirrors tools/composio.ts:executeAction.
+//
+// SECURITY: connectedAccountID is resolved server-side from the caller's own
+// user_installed_plugins row via RESTAccountStore — a client-supplied id is
+// never trusted, so one user cannot drive another user's Composio connection.
+// This is the same invariant the TS router enforced via PluginModel.findById
+// (user-scoped). The response shape matches MCPService.processToolCallResult
+// ({ content, state: { content, isError }, success }) consumed by the
+// chat-plugin executor.
+func composioExecuteToolHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if composioCli == nil {
+		http.Error(w, "composio not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req composioExecuteToolReq
+	if err := composioReadJSON(r, &req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.Identifier == "" || req.ToolSlug == "" {
+		http.Error(w, "identifier and toolSlug are required", http.StatusBadRequest)
+		return
+	}
+	userID := composioUserFromHeader(r)
+
+	// Resolve the connected account for THIS user — never trust the client.
+	var connectedAccountID string
+	if composioAccountStore != nil {
+		id, err := composioAccountStore.Resolve(r.Context(), userID, req.Identifier)
+		if err != nil {
+			slog.Error("composio: resolve account failed",
+				"user", userID, "identifier", req.Identifier, "error", err)
+			http.Error(w, "failed to resolve connection", http.StatusInternalServerError)
+			return
+		}
+		connectedAccountID = id
+	}
+	if connectedAccountID == "" {
+		http.Error(w, fmt.Sprintf("no Composio connection found for %q", req.Identifier), http.StatusNotFound)
+		return
+	}
+
+	result, err := composioCli.ExecuteTool(r.Context(), req.ToolSlug, req.ToolArgs, connectedAccountID, userID)
+	if err != nil {
+		slog.Error("composio: execute tool failed", "tool", req.ToolSlug, "error", err)
+		http.Error(w, "tool execution failed", http.StatusBadGateway)
+		return
+	}
+
+	content := result.Content
+	isError := !result.Success
+	if result.Error != nil {
+		content = result.Error.Message
+		isError = true
+	}
+	composioWriteJSON(w, composioExecuteToolResp{
+		Content: content,
+		State: composioExecuteState{
+			Content: []composioContentBlock{{Text: content, Type: "text"}},
+			IsError: isError,
+		},
+		Success: !isError,
+	})
 }
 
 // ----- composio client package-level vars -----

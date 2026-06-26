@@ -403,6 +403,8 @@ func main() {
 	mux.HandleFunc("/v1/composio/plugins", composioGetPluginsHandler)
 	mux.HandleFunc("/v1/composio/plugins/update", composioUpdatePluginHandler)
 	mux.HandleFunc("/v1/composio/plugins/remove", composioRemovePluginHandler)
+	mux.HandleFunc("/v1/composio/tools", composioListToolsHandler)
+	mux.HandleFunc("/v1/composio/tools/execute", composioExecuteToolHandler)
 	mux.HandleFunc("/v1/composio/oauth/callback", composioOAuthCallbackHandler)
 	mux.HandleFunc("/v1/chat/send", sendChatHandler)
 	mux.HandleFunc("/v1/chat/archive-tool-result", archiveToolResultHandler)

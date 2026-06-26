@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"egent-lobehub/connectors/composio"
+	composioeino "egent-lobehub/connectors/composio/eino"
 )
 
 // fakeComposioServer stands up an httptest.Server that handles the two
@@ -243,6 +244,205 @@ func TestComposioHandlers_GetPlugins(t *testing.T) {
 	var resp composioGetPluginsResp
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fakeComposioToolsServer serves GET /tools (tool catalog) and
+// POST /tools/execute/{slug} (tool execution) for the list/execute handlers.
+func fakeComposioToolsServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/tools", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"items": []map[string]any{
+				{
+					"slug":             "GMAIL_SEND_EMAIL",
+					"name":             "Send Email",
+					"description":      "Send an email",
+					"input_parameters": map[string]any{"type": "object", "properties": map[string]any{}},
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("/tools/execute/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data":     "Email sent to inbox",
+			"executed": true,
+		})
+	})
+
+	return srv
+}
+
+func TestComposioHandlers_ListTools_Success(t *testing.T) {
+	srv := fakeComposioToolsServer(t)
+	c, err := composio.NewComposer("test-key", composio.WithBaseURL(srv.URL), composio.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	composioCli = c
+	t.Cleanup(func() { composioCli = nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/composio/tools?appSlug=GMAIL", nil)
+	rr := httptest.NewRecorder()
+	composioListToolsHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp composioListToolsResp
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Tools) != 1 {
+		t.Fatalf("Tools len = %d, want 1", len(resp.Tools))
+	}
+	if resp.Tools[0].Name != "GMAIL_SEND_EMAIL" {
+		t.Errorf("Name = %q, want GMAIL_SEND_EMAIL (slug preferred)", resp.Tools[0].Name)
+	}
+	if resp.Tools[0].Description != "Send an email" {
+		t.Errorf("Description = %q", resp.Tools[0].Description)
+	}
+	if string(resp.Tools[0].InputSchema) == "" {
+		t.Error("InputSchema is empty")
+	}
+}
+
+func TestComposioHandlers_ListTools_NoClient(t *testing.T) {
+	composioCli = nil
+	req := httptest.NewRequest(http.MethodGet, "/v1/composio/tools?appSlug=GMAIL", nil)
+	rr := httptest.NewRecorder()
+	composioListToolsHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var resp composioListToolsResp
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if len(resp.Tools) != 0 {
+		t.Errorf("expected empty tools when client is nil, got %d", len(resp.Tools))
+	}
+}
+
+func TestComposioHandlers_ListTools_MissingAppSlug(t *testing.T) {
+	srv := fakeComposioToolsServer(t)
+	c, err := composio.NewComposer("test-key", composio.WithBaseURL(srv.URL), composio.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	composioCli = c
+	t.Cleanup(func() { composioCli = nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/composio/tools", nil)
+	rr := httptest.NewRecorder()
+	composioListToolsHandler(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestComposioHandlers_ExecuteTool_Success(t *testing.T) {
+	composioSrv := fakeComposioToolsServer(t)
+	c, err := composio.NewComposer("test-key", composio.WithBaseURL(composioSrv.URL), composio.WithHTTPClient(composioSrv.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	composioCli = c
+	t.Cleanup(func() { composioCli = nil })
+
+	// Fake pREST: resolve an ACTIVE connection for user-1 + gmail.
+	prest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"identifier": "gmail",
+				"user_id":    "user-1",
+				"custom_params": map[string]any{
+					"composio": map[string]any{
+						"connectedAccountId": "ca_user1",
+						"status":             "ACTIVE",
+					},
+				},
+			},
+		})
+	}))
+	t.Cleanup(prest.Close)
+	composioAccountStore = composioeino.NewRESTAccountStore(prest.URL)
+	t.Cleanup(func() { composioAccountStore = nil })
+
+	body, _ := json.Marshal(map[string]any{
+		"identifier": "gmail",
+		"toolSlug":   "GMAIL_SEND_EMAIL",
+		"toolArgs":   map[string]any{"to": "a@b.c"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/composio/tools/execute", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-arch-actor-id", "user-1")
+	rr := httptest.NewRecorder()
+	composioExecuteToolHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp composioExecuteToolResp
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success {
+		t.Errorf("Success = false, want true; body = %s", rr.Body.String())
+	}
+	if resp.Content != "Email sent to inbox" {
+		t.Errorf("Content = %q", resp.Content)
+	}
+	if resp.State.IsError {
+		t.Error("State.IsError = true, want false")
+	}
+}
+
+func TestComposioHandlers_ExecuteTool_NoConnection(t *testing.T) {
+	composioSrv := fakeComposioToolsServer(t)
+	c, err := composio.NewComposer("test-key", composio.WithBaseURL(composioSrv.URL), composio.WithHTTPClient(composioSrv.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	composioCli = c
+	t.Cleanup(func() { composioCli = nil })
+
+	// Fake pREST returns no rows → not connected.
+	prest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	t.Cleanup(prest.Close)
+	composioAccountStore = composioeino.NewRESTAccountStore(prest.URL)
+	t.Cleanup(func() { composioAccountStore = nil })
+
+	body, _ := json.Marshal(map[string]any{"identifier": "gmail", "toolSlug": "GMAIL_SEND_EMAIL"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/composio/tools/execute", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-arch-actor-id", "user-1")
+	rr := httptest.NewRecorder()
+	composioExecuteToolHandler(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (no connection)", rr.Code)
+	}
+}
+
+func TestComposioHandlers_ExecuteTool_NoClient(t *testing.T) {
+	composioCli = nil
+	body, _ := json.Marshal(map[string]any{"identifier": "gmail", "toolSlug": "GMAIL_SEND_EMAIL"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/composio/tools/execute", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	composioExecuteToolHandler(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
 	}
 }
 

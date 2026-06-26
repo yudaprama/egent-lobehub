@@ -9,7 +9,7 @@ import (
 )
 
 // mockPREST returns an httptest.Server that handles one route:
-// /lobehub/public/plugins (the only endpoint RESTAccountStore hits).
+// /lobehub/public/user_installed_plugins (the only endpoint RESTAccountStore hits).
 // Responses are configured per-test by mutating the returned handler.
 func mockPREST(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -22,7 +22,7 @@ func mockPREST(t *testing.T) *httptest.Server {
 func TestRESTAccountStore_NotConnected(t *testing.T) {
 	srv := mockPREST(t)
 	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/lobehub/public/plugins" {
+		if r.URL.Path != "/lobehub/public/user_installed_plugins" {
 			http.NotFound(w, r)
 			return
 		}

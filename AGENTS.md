@@ -245,7 +245,7 @@ Eino adapter wrapping `connectors/composio` as `tool.InvokableTool`s.
 - `ComposioTool` — single Eino `InvokableTool` backed by one Composio action. Lazy-parses JSON Schema on first `Info()` call.
 - `Builder` — fetches manifest per app, emits one `ComposioTool` per action. Skips apps whose manifest fetch fails.
 - `ConnectedAccountStore` (interface) — `Resolve(ctx, userID, appIdentifier) -> (connectedAccountID, error)`. Returning `("", nil)` triggers `NotConnectedError`.
-- `RESTAccountStore` — pREST-backed impl: `GET /lobehub/public/plugins?identifier=eq.<id>`, reads `custom_params.composio.connected_account_id`, filters by `user_id`.
+- `RESTAccountStore` — pREST-backed impl: `GET /lobehub/public/user_installed_plugins?identifier=eq.<id>`, reads `custom_params.composio.connectedAccountId`, filters by `user_id`. Used by both the Eino `ComposioTool` adapter and the `composioExecuteToolHandler` (server-side account resolution — a client id is never trusted).
 
 **Schema conversion:** Composio's `input_parameters` JSON Schema → `eino-contrib/jsonschema` → `schema.NewParamsOneOfByJSONSchema`. Preserves `anyOf`, `oneOf`, `$defs`.
 
@@ -266,11 +266,13 @@ can drive connection lifecycle through Go instead of Next.js.
 | GET  | `/v1/composio/plugins` | List user's connected plugins | `composio.getComposioPlugins` |
 | POST | `/v1/composio/plugins/update` | Mark ACTIVE + persist tool count | `composio.updateComposioPlugin` |
 | POST | `/v1/composio/plugins/remove` | Remove local plugin entry | `composio.removeComposioPlugin` |
+| GET  | `/v1/composio/tools` | List an app's actions (`GetToolsForApp`) | `tools.composio.getActions` + `listActions` |
+| POST | `/v1/composio/tools/execute` | Run an action; server resolves `connectedAccountId` via `RESTAccountStore` | `tools.composio.executeAction` |
 | GET  | `/v1/composio/oauth/callback` | Popup-closing HTML | `lobehub/src/app/(backend)/api/composio/oauth/callback/route.ts` |
 
-**State:** in-memory `sync.Map` keyed by `connected_account_id`. Swap for a pREST-backed `PluginStore` (read/write `lobehub.public.plugins`) when scaling.
+**State:** in-memory `sync.Map` keyed by `connected_account_id`. Swap for a pREST-backed `PluginStore` (read/write `lobehub.public.user_installed_plugins`) when scaling.
 
-**Test coverage:** 9 handler tests with stdlib `httptest`.
+**Test coverage:** 15 handler tests with stdlib `httptest` (incl. `composioListToolsHandler` + `composioExecuteToolHandler` with a fake pREST account store).
 
 ## API endpoints
 
@@ -284,6 +286,8 @@ can drive connection lifecycle through Go instead of Next.js.
 | `/v1/composio/plugins` | GET | List user's connected plugins |
 | `/v1/composio/plugins/update` | POST | Mark plugin ACTIVE |
 | `/v1/composio/plugins/remove` | POST | Remove a local plugin entry |
+| `/v1/composio/tools` | GET | List a Composio app's actions (`GetToolsForApp`) |
+| `/v1/composio/tools/execute` | POST | Execute a Composio action (server-resolved `connectedAccountId`) |
 | `/v1/composio/oauth/callback` | GET | OAuth popup landing (auto-closes after 300ms) |
 | `/health` | GET | Liveness check |
 | `/health/ready` | GET | Readiness probe: 200 or 503 |
