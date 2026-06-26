@@ -1,27 +1,21 @@
-name: Build & Release
+name: Build and Release
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build all targets
     runs-on: ubuntu-latest
     env:
-      # github.com/kawai-network/x is a private repo; fetch it directly via git
-      # (with the token configured below) instead of the public Go module proxy.
       GOPRIVATE: github.com/kawai-network/*
     steps:
       - uses: actions/checkout@v4
 
       - name: Authenticate git for private Go modules
-        # Lets `go mod download` reach private github.com/kawai-network/* deps.
         run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/kawai-network/".insteadOf "https://github.com/kawai-network/"
 
       - uses: actions/setup-go@v5
@@ -29,89 +23,31 @@ jobs:
           go-version: "1.26"
           cache: true
 
-      - name: Determine version
-        id: ver
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
-          else
-            VERSION="v0.0.${GITHUB_RUN_NUMBER}-$(echo "${GITHUB_SHA::7}")"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION"
-
-      - name: Run tests
-        run: make test
-
-      - name: Build all targets
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: make build-all VERSION="$VERSION"
-
-      - name: Pack source archive
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
+      - name: Build linux-amd64
         run: |
           mkdir -p dist
-          git archive --format=tar.gz \
-            --prefix="egent-lobehub-${VERSION}/" \
-            -o "dist/egent-lobehub-source-${VERSION}.tar.gz" \
-            HEAD
-          # Expose main.go as a single downloadable file (convenience for tooling)
-          git show HEAD:main.go > "dist/main.go"
-          sha256sum "dist/egent-lobehub-source-${VERSION}.tar.gz" \
-            > "dist/egent-lobehub-source-${VERSION}.tar.gz.sha256"
-          sha256sum "dist/main.go" > "dist/main.go.sha256"
-          ls -lh dist/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/egent-lobehub-linux-amd64 .
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: egent-lobehub-binaries
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
-            dist/main.go
-          retention-days: 30
+      - name: Build linux-arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/egent-lobehub-linux-arm64 .
 
-  release:
-    name: Publish release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Build darwin-amd64
+        run: CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/egent-lobehub-darwin-amd64 .
 
-      - name: Determine version
-        id: ver
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          # SemVer pre-release detection: any dash after vX.Y.Z (e.g. v0.0.3-rc1, v0.0.3-pre.1)
-          if [[ "$VERSION" == *-* ]]; then
-            IS_PRERELEASE=true
-          else
-            IS_PRERELEASE=false
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION (prerelease=$IS_PRERELEASE)"
+      - name: Build darwin-arm64
+        run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/egent-lobehub-darwin-arm64 .
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+      - name: Checksums
+        run: sha256sum dist/* > dist/CHECKSUMS.txt
 
-      - name: List artifacts
-        run: ls -la dist/
-
-      - name: Create or update release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.version }}
-          name: Release ${{ steps.ver.outputs.version }}
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          draft: false
+          prerelease: false
           generate_release_notes: true
-          prerelease: ${{ steps.ver.outputs.is_prerelease == 'true' }}
-          files: |
-            dist/*.tar.gz
-            dist/*.sha256
-            dist/main.go
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
