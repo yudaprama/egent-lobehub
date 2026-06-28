@@ -241,6 +241,9 @@ func main() {
 	if dbPool != nil {
 		slog.Info("knowledge: wiring knowledge_search tool")
 		embedder := buildKnowledgeEmbedder()
+		// Expose the embedder + pool to the synchronous document-ingest endpoint
+		// (POST /v1/documents) so uploads share the same RAG pipeline as search.
+		ragEmbedder = embedder
 
 		palaceEmbedder, err := palace.NewEmbedder(embedder)
 		if err != nil {
@@ -413,6 +416,22 @@ func main() {
 	mux.HandleFunc("/v1/connector/credentials/decrypt", connectorDecryptCredentialsHandler)
 	mux.HandleFunc("/v1/chat/send", sendChatHandler)
 	mux.HandleFunc("/v1/chat/archive-tool-result", archiveToolResultHandler)
+	// Per-user Talos API key management (issue/list/revoke) for the SPA.
+	mux.HandleFunc("/v1/keys", keysHandler)
+	mux.HandleFunc("/v1/keys/revoke", keysRevokeHandler)
+	// Workspace dual-write (Postgres rows + Keto authz tuples).
+	mux.HandleFunc("/v1/workspaces", workspacesHandler)
+	mux.HandleFunc("/v1/workspaces/members", workspaceMembersHandler)
+	mux.HandleFunc("/v1/workspaces/members/remove", workspaceRemoveMemberHandler)
+	mux.HandleFunc("/v1/workspaces/leave", workspaceLeaveHandler)
+	// Billing balance (Talos admin read, server-side) + synchronous RAG ingest.
+	mux.HandleFunc("/v1/balance", balanceHandler)
+	mux.HandleFunc("/v1/documents", documentsHandler)
+	// Status-code authz adapter for the Oathkeeper Phase 1 edge gate (internal).
+	mux.HandleFunc("/authz/workspace", authzWorkspaceHandler)
+	// Default-workspace provisioning, called by the Kratos after-registration
+	// web_hook (internal path, secret-gated; not routed by the public edge).
+	mux.HandleFunc("/internal/workspaces/bootstrap", internalWorkspaceBootstrapHandler)
 	if palaceHandler != nil {
 		palaceHandler.RegisterWithAuth(mux, buildPalaceAuth(ketoClient))
 	} else {
