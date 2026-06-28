@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 
 	"egent-lobehub/authz"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Workspace management with DUAL-WRITE: the Postgres rows (workspaces,
@@ -56,14 +59,32 @@ func authzWorkspaceHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK) // personal scope
 		return
 	}
-	if ketoClient == nil {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
 	perm := body.Permission
 	if perm != "view" && perm != "write" && perm != "manage" {
 		perm = "view"
 	}
+
+	// Keto is the authz source of truth when configured. When it is NOT
+	// (KETO_*_URL unset → ketoClient nil), fall back to the workspace_members
+	// table — the dual-write mirror — so workspace-scoped reads still work AND
+	// stay tenant-isolated in a no-Keto deployment. Without this, the gate fails
+	// closed and EVERY workspace-scoped pREST read (sessions/messages/topics/
+	// files/documents/agents) 403s the moment an X-Workspace-Id is sent.
+	if ketoClient == nil {
+		allowed, err := checkWorkspaceMembership(r.Context(), body.Workspace, body.User, perm)
+		if err != nil {
+			slog.Error("authz workspace gate: membership check", "err", err)
+			http.Error(w, "authz error", http.StatusForbidden) // fail closed
+			return
+		}
+		if !allowed {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	allowed, err := ketoClient.CheckWorkspace(r.Context(), body.Workspace, body.User, perm)
 	if err != nil {
 		slog.Error("authz workspace gate: keto check", "err", err)
@@ -75,6 +96,39 @@ func authzWorkspaceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// checkWorkspaceMembership authorizes a workspace permission against the
+// workspace_members table (the Keto dual-write mirror). It backs the Phase 1
+// edge gate when Keto is not configured. Permission tiers map to roles:
+//
+//	view   → owner | member | viewer (any member)
+//	write  → owner | member
+//	manage → owner only
+//
+// Returns (false, nil) when the user is not a member (deny, not an error).
+func checkWorkspaceMembership(ctx context.Context, workspaceID, userID, perm string) (bool, error) {
+	if dbPool == nil || workspaceID == "" || userID == "" {
+		return false, nil
+	}
+	var role string
+	err := dbPool.QueryRow(ctx,
+		`SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2`,
+		workspaceID, userID).Scan(&role)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil // not a member → deny
+		}
+		return false, err
+	}
+	switch perm {
+	case "manage":
+		return role == roleOwner, nil
+	case "write":
+		return role == roleOwner || role == roleMember, nil
+	default: // view
+		return role == roleOwner || role == roleMember || role == roleViewer, nil
+	}
 }
 
 // workspacesHandler dispatches /v1/workspaces by method:
