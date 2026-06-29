@@ -241,9 +241,6 @@ func main() {
 	if dbPool != nil {
 		slog.Info("knowledge: wiring knowledge_search tool")
 		embedder := buildKnowledgeEmbedder()
-		// Expose the embedder + pool to the synchronous document-ingest endpoint
-		// (POST /v1/documents) so uploads share the same RAG pipeline as search.
-		ragEmbedder = embedder
 
 		palaceEmbedder, err := palace.NewEmbedder(embedder)
 		if err != nil {
@@ -424,9 +421,9 @@ func main() {
 	mux.HandleFunc("/v1/workspaces/members", workspaceMembersHandler)
 	mux.HandleFunc("/v1/workspaces/members/remove", workspaceRemoveMemberHandler)
 	mux.HandleFunc("/v1/workspaces/leave", workspaceLeaveHandler)
-	// Billing balance (Talos admin read, server-side) + synchronous RAG ingest.
-	mux.HandleFunc("/v1/balance", balanceHandler)
-	mux.HandleFunc("/v1/documents", documentsHandler)
+	// Balance moved to Talos self-service surface
+	// (/v2alpha1/self/actorBalance) behind the Oathkeeper edge — see
+	// oathkeeper-access-rules.yml::talos-self.
 	// Status-code authz adapter for the Oathkeeper Phase 1 edge gate (internal).
 	mux.HandleFunc("/authz/workspace", authzWorkspaceHandler)
 	// Default-workspace provisioning, called by the Kratos after-registration
