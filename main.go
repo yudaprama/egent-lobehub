@@ -416,9 +416,9 @@ func main() {
 	mux.HandleFunc("/v1/connector/credentials/decrypt", connectorDecryptCredentialsHandler)
 	mux.HandleFunc("/v1/chat/send", sendChatHandler)
 	mux.HandleFunc("/v1/chat/archive-tool-result", archiveToolResultHandler)
-	// Per-user Talos API key management (issue/list/revoke) for the SPA.
-	mux.HandleFunc("/v1/keys", keysHandler)
-	mux.HandleFunc("/v1/keys/revoke", keysRevokeHandler)
+	// Per-user API key management moved to Talos self-service surface
+	// (/v2alpha1/self/issuedApiKeys*) behind the Oathkeeper edge — see
+	// oathkeeper-access-rules.yml::talos-self-keys.
 	// Workspace dual-write (Postgres rows + Keto authz tuples).
 	mux.HandleFunc("/v1/workspaces", workspacesHandler)
 	mux.HandleFunc("/v1/workspaces/members", workspaceMembersHandler)

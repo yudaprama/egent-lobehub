@@ -37,6 +37,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// writeJSONError writes a JSON {"error": msg} body. Used by the HTTP
+// handlers in main package for non-success responses.
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]any{"error": msg})
+}
+
 func generateNanoID(size int) (string, error) {
 	b := make([]byte, size)
 	for i := range b {
